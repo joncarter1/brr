@@ -1,0 +1,50 @@
+cluster_name: cpu
+max_workers: 0
+
+provider:
+  type: aws
+  region: us-east-1
+  availability_zone: us-east-1f
+  cache_stopped_nodes: True
+
+auth:
+  ssh_user: ubuntu
+  ssh_private_key: {{AWS_SSH_KEY}}
+
+head_node_type: ray.head.default
+
+available_node_types:
+  ray.head.default:
+    resources: {}
+    node_config:
+      InstanceType: t3.2xlarge
+      ImageId: {{AMI_UBUNTU}}
+      KeyName: {{AWS_KEY_NAME}}
+      SecurityGroupIds: ["{{AWS_SECURITY_GROUP}}"]
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 100
+            VolumeType: gp3
+  ray.worker.default:
+    min_workers: 0
+    max_workers: 2
+    resources: {}
+    node_config:
+      InstanceType: t3.large
+      ImageId: {{AMI_UBUNTU}}
+      KeyName: {{AWS_KEY_NAME}}
+      SecurityGroupIds: ["{{AWS_SECURITY_GROUP}}"]
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 100
+            VolumeType: gp3
+
+head_start_ray_commands:
+  - source $HOME/.venv/bin/activate && ray stop
+  - source $HOME/.venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
+
+worker_start_ray_commands:
+  - source $HOME/.venv/bin/activate && ray stop
+  - source $HOME/.venv/bin/activate && ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076

@@ -1,0 +1,36 @@
+cluster_name: brr-dev
+max_workers: 0
+
+provider:
+  type: aws
+  region: us-east-1
+  availability_zone: us-east-1a, us-east-1b, us-east-1c, us-east-1d
+  cache_stopped_nodes: True # If not present, the default is True.
+
+auth:
+  ssh_user: ubuntu
+  ssh_private_key: {{AWS_SSH_KEY}}
+
+head_node_type: ray.head.default
+
+available_node_types:
+  ray.head.default:
+    resources: {}
+    node_config:
+      InstanceType: gr6.4xlarge # L4 GPU https://aws.amazon.com/ec2/instance-types/g6/
+      ImageId: {{AMI_DL}}
+      KeyName: {{AWS_KEY_NAME}}
+      SecurityGroupIds: ["{{AWS_SECURITY_GROUP}}"]
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 200
+            VolumeType: gp3
+
+head_start_ray_commands:
+    - source $HOME/.venv/bin/activate && ray stop
+    - source $HOME/.venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
+
+worker_start_ray_commands:
+    - source $HOME/.venv/bin/activate && ray stop
+    - source $HOME/.venv/bin/activate && ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076

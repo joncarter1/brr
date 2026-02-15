@@ -1,0 +1,45 @@
+cluster_name: cpu
+max_workers: 2
+idle_timeout_minutes: 5
+
+provider:
+  type: external
+  module: brr.nebius.node_provider.NebiusNodeProvider
+  project_id: "{{NEBIUS_PROJECT_ID}}"
+  filesystem_id: "{{NEBIUS_FILESYSTEM_ID}}"
+
+auth:
+  ssh_user: ubuntu
+  ssh_private_key: {{NEBIUS_SSH_KEY}}
+
+head_node_type: ray.head.default
+
+available_node_types:
+  ray.head.default:
+    resources:
+      CPU: 8
+    node_config:
+      platform_id: cpu-e2
+      preset_id: 8vcpu-32gb
+      image_family: ubuntu22.04-driverless
+      subnet_id: "{{NEBIUS_SUBNET_ID}}"
+      disk_size_gb: 100
+  ray.worker.default:
+    min_workers: 0
+    max_workers: 2
+    resources:
+      CPU: 4
+    node_config:
+      platform_id: cpu-e2
+      preset_id: 4vcpu-16gb
+      image_family: ubuntu22.04-driverless
+      subnet_id: "{{NEBIUS_SUBNET_ID}}"
+      disk_size_gb: 100
+
+head_start_ray_commands:
+    - source $HOME/.venv/bin/activate && ray stop
+    - source $HOME/.venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
+
+worker_start_ray_commands:
+    - source $HOME/.venv/bin/activate && ray stop
+    - source $HOME/.venv/bin/activate && ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076

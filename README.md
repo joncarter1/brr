@@ -88,7 +88,7 @@ Project config (`.brr/config.env`) overrides global settings (`~/.brr/config.env
 | `aws:cpu-l4` | t3.2xlarge + g6.4xlarge | 1x L4 | 0-4 |
 | `nebius:cpu` | 8vcpu-32gb | — | 0-2 |
 | `nebius:h100` | 1gpu-16vcpu-200gb | 1x H100 | — |
-| `nebius:cpu-h100` | 8vcpu-32gb + 8gpu-128vcpu-1600gb | 8x H100 | 0-4 |
+| `nebius:cpu-h100s` | 8vcpu-32gb + 8gpu-128vcpu-1600gb | 8x H100 | 0-4 |
 
 ### Overrides
 
@@ -187,6 +187,19 @@ IDLE_SHUTDOWN_GRACE_MIN="15"
 ```
 
 The grace period prevents shutdown during initial setup. Monitor on a node with `journalctl -u idle-shutdown -f`.
+
+### Node caching (Nebius)
+
+By default, Nebius nodes are **deleted** on scale-down. Unlike AWS, stopped Nebius instances still incur disk charges, so deleting is cheaper.
+
+To keep nodes stopped instead (faster restart, but you pay for disks while idle), enable caching in your template's provider config:
+
+```yaml
+provider:
+  cache_stopped_nodes: true
+```
+
+AWS nodes are cached (stopped) by default — this setting only affects Nebius.
 
 ## Commands
 

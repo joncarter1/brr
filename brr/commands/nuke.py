@@ -460,7 +460,7 @@ def nuke(force, region, provider):
         if "nebius" in targets:
             nebius_stats = _nuke_nebius(config["NEBIUS_PROJECT_ID"], progress, task)
 
-        # Clean up local SSH config entries
+        # Clean up local SSH config entries (scoped to targeted providers)
         progress.update(task, description="[red]Cleaning up local SSH config...[/red]")
         from brr.aws.nodes import remove_ssh_config
         import re
@@ -469,7 +469,9 @@ def nuke(force, region, provider):
             with open(ssh_config_path) as f:
                 content = f.read()
             for alias in re.findall(r"^Host (brr-\S+)", content, re.MULTILINE):
-                remove_ssh_config(alias)
+                # e.g. brr-aws-h100, brr-nebius-cpu
+                if any(alias.startswith(f"brr-{t}-") for t in targets):
+                    remove_ssh_config(alias)
 
         progress.update(task, description="[bold green]Nuclear deletion complete![/bold green]")
 

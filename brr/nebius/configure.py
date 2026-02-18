@@ -132,6 +132,38 @@ def _create_filesystem(project_id, name, size_gb):
         return None
 
 
+def _resize_filesystem(filesystem_id, new_size_gb):
+    """Resize an existing shared filesystem. Returns True on success."""
+    try:
+        import asyncio
+        from nebius.api.nebius.compute.v1 import (
+            FilesystemServiceClient,
+            GetFilesystemRequest,
+            UpdateFilesystemRequest,
+            FilesystemSpec,
+        )
+
+        async def _resize():
+            sdk = _nebius_sdk()
+            async with sdk:
+                client = FilesystemServiceClient(sdk)
+                fs = await client.get(GetFilesystemRequest(id=filesystem_id))
+                op = await client.update(UpdateFilesystemRequest(
+                    metadata=fs.metadata,
+                    spec=FilesystemSpec(
+                        type=fs.spec.type,
+                        size_gibibytes=new_size_gb,
+                    ),
+                ))
+                await op.wait()
+                return True
+
+        return asyncio.run(_resize())
+    except Exception as e:
+        console.print(f"[red]Failed to resize filesystem: {e}[/red]")
+        return False
+
+
 def _get_or_create_ssh_key():
     """Find an existing Nebius SSH key or generate a new one."""
     ensure_state_dirs()
@@ -299,6 +331,24 @@ def configure_nebius():
                 console.print(f"Created filesystem: [green]{filesystem_id}[/green]")
         else:
             filesystem_id = choice
+            # Offer to resize the selected filesystem
+            current_size = next(
+                (s for fid, _, s in (filesystems or []) if fid == choice), None
+            )
+            if current_size is not None:
+                new_size = click.prompt(
+                    f"  Filesystem size (GB, currently {current_size})",
+                    default=current_size,
+                    type=int,
+                )
+                if new_size < current_size:
+                    console.print("[yellow]Nebius filesystems can only grow, not shrink — keeping current size[/yellow]")
+                elif new_size > current_size:
+                    with console.status("[bold green]Resizing filesystem..."):
+                        if _resize_filesystem(filesystem_id, new_size):
+                            console.print(f"Resized to [green]{new_size} GB[/green]")
+                        else:
+                            console.print("[yellow]Resize failed — keeping current size[/yellow]")
     else:
         filesystem_id = ""
 

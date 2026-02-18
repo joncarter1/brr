@@ -23,6 +23,10 @@ class NebiusNodeProvider(NodeProvider):
         self.project_id = provider_config["project_id"]
         fs_id = provider_config.get("filesystem_id", "")
         self.filesystem_id = "" if not fs_id or "{{" in fs_id else fs_id
+        # Unlike AWS, stopped Nebius instances still incur disk costs.
+        # Default to deleting nodes on scale-down to avoid surprise charges.
+        # Set cache_stopped_nodes: true in the provider config to keep them.
+        self.cache_stopped_nodes = provider_config.get("cache_stopped_nodes", False)
 
         from pathlib import Path
         from nebius.sdk import SDK
@@ -139,24 +143,25 @@ class NebiusNodeProvider(NodeProvider):
             PublicIPAddress,
         )
 
-        # Reuse stopped instances before creating new ones
+        # Reuse stopped instances before creating new ones (if caching enabled)
         node_type = tags.get("ray-node-type", "worker")
         remaining = count
-        try:
-            stopped = await self._find_stopped_nodes(node_type)
-            for inst_id in stopped:
-                if remaining <= 0:
-                    break
-                await self._start_instance(inst_id)
-                await self._set_node_tags(inst_id, tags)
-                inst = await self._fetch_instance(inst_id)
-                if inst:
-                    with self.lock:
-                        self._cache[inst_id] = {"tags": dict(tags), "instance": inst}
-                remaining -= 1
-        except Exception:
-            logger.warning("Failed to reuse stopped instances, creating new ones",
-                           exc_info=True)
+        if self.cache_stopped_nodes:
+            try:
+                stopped = await self._find_stopped_nodes(node_type)
+                for inst_id in stopped:
+                    if remaining <= 0:
+                        break
+                    await self._start_instance(inst_id)
+                    await self._set_node_tags(inst_id, tags)
+                    inst = await self._fetch_instance(inst_id)
+                    if inst:
+                        with self.lock:
+                            self._cache[inst_id] = {"tags": dict(tags), "instance": inst}
+                    remaining -= 1
+            except Exception:
+                logger.warning("Failed to reuse stopped instances, creating new ones",
+                               exc_info=True)
 
         instance_client = self._instance_client()
         disk_client = self._disk_client()
@@ -174,15 +179,26 @@ class NebiusNodeProvider(NodeProvider):
             baked_image_id = node_config.get("baked_image_id")
             disk_name = f"{name}-boot"
 
+            # Map disk_type string to DiskSpec enum
+            _DISK_TYPES = {
+                "network-ssd": DiskSpec.DiskType.NETWORK_SSD,
+                "network-ssd-nonreplicated": DiskSpec.DiskType.NETWORK_SSD_NON_REPLICATED,
+                "network-ssd-io-m3": DiskSpec.DiskType.NETWORK_SSD_IO_M3,
+            }
+            disk_type = _DISK_TYPES.get(
+                node_config.get("disk_type", "network-ssd"),
+                DiskSpec.DiskType.NETWORK_SSD,
+            )
+
             if baked_image_id:
                 disk_spec = DiskSpec(
-                    type=DiskSpec.DiskType.NETWORK_SSD,
+                    type=disk_type,
                     source_image_id=baked_image_id,
                     size_gibibytes=disk_size_gb,
                 )
             else:
                 disk_spec = DiskSpec(
-                    type=DiskSpec.DiskType.NETWORK_SSD,
+                    type=disk_type,
                     source_image_family=SourceImageFamily(
                         image_family=image_family,
                     ),
@@ -285,12 +301,20 @@ class NebiusNodeProvider(NodeProvider):
             self._cache.pop(node_id, None)
 
     async def _terminate_node(self, node_id):
-        from nebius.api.nebius.compute.v1 import StopInstanceRequest
+        if self.cache_stopped_nodes:
+            from nebius.api.nebius.compute.v1 import StopInstanceRequest
 
-        client = self._instance_client()
-        operation = await client.stop(StopInstanceRequest(id=node_id))
-        await operation.wait()
-        logger.info(f"Stopped Nebius instance {node_id}")
+            client = self._instance_client()
+            operation = await client.stop(StopInstanceRequest(id=node_id))
+            await operation.wait()
+            logger.info(f"Stopped Nebius instance {node_id}")
+        else:
+            from nebius.api.nebius.compute.v1 import DeleteInstanceRequest
+
+            client = self._instance_client()
+            operation = await client.delete(DeleteInstanceRequest(id=node_id))
+            await operation.wait()
+            logger.info(f"Deleted Nebius instance {node_id}")
 
     def terminate_nodes(self, node_ids):
         for node_id in node_ids:

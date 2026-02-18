@@ -88,13 +88,7 @@ def parse_provider(name):
 
 
 def cluster_ssh_alias(provider, name):
-    """Return SSH host alias for a cluster.
-
-    AWS:    'brr-h100'
-    Nebius: 'brr-nebius-h100'
-    """
-    if provider == "aws":
-        return f"brr-{name}"
+    """Return SSH host alias for a cluster, e.g. 'brr-aws-h100', 'brr-nebius-h100'."""
     return f"brr-{provider}-{name}"
 
 

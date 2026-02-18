@@ -214,8 +214,9 @@ def remove_ssh_config(host_alias):
 def update_ssh_config(host_alias, head_ip, ssh_key):
     """Write or update a Host block in ~/.ssh/config.
 
-    host_alias is the full SSH alias (e.g. 'brr-cpu', 'brr-nebius-h100').
+    host_alias is the full SSH alias (e.g. 'brr-aws-h100', 'brr-nebius-h100').
     """
+
     block = (
         f"Host {host_alias}\n"
         f"    HostName {head_ip}\n"

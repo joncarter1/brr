@@ -7,6 +7,7 @@ provider:
   module: brr.nebius.node_provider.NebiusNodeProvider
   project_id: "{{NEBIUS_PROJECT_ID}}"
   filesystem_id: "{{NEBIUS_FILESYSTEM_ID}}"
+  # cache_stopped_nodes: true  # Stop (not delete) on scale-down for faster restart. Costs disk fees while stopped.
 
 auth:
   ssh_user: ubuntu
@@ -23,7 +24,8 @@ available_node_types:
       preset_id: 8vcpu-32gb
       image_family: ubuntu22.04-driverless
       subnet_id: "{{NEBIUS_SUBNET_ID}}"
-      disk_size_gb: 100
+      disk_size_gb: 50
+      disk_type: network-ssd-nonreplicated
   ray.worker.default:
     min_workers: 0
     max_workers: 2
@@ -34,7 +36,8 @@ available_node_types:
       preset_id: 4vcpu-16gb
       image_family: ubuntu22.04-driverless
       subnet_id: "{{NEBIUS_SUBNET_ID}}"
-      disk_size_gb: 100
+      disk_size_gb: 50
+      disk_type: network-ssd-nonreplicated
 
 head_start_ray_commands:
     - source $HOME/.venv/bin/activate && ray stop

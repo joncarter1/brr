@@ -76,7 +76,7 @@ Key behaviors:
 - **`brr/nebius/configure.py`** — Project selection, subnet, SSH keys, shared filesystem, GitHub SSH.
 - **`brr/nebius/nodes.py`** — Instance queries (`query_clusters`, `query_head_ip`), SSH config management.
 - **`brr/nebius/node_provider.py`** — Custom Ray NodeProvider for autoscaling. Stop-instead-of-delete for cached nodes. Restarts stopped instances before creating new ones.
-- **`brr/nebius/templates/`** — Ray YAML templates: `cpu.yaml`, `h100.yaml`, `cpu-h100.yaml`.
+- **`brr/nebius/templates/`** — Ray YAML templates: `cpu.yaml`, `h100.yaml`, `cpu-h100s.yaml`.
 
 ### Known Pitfalls
 

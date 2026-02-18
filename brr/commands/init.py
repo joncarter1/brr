@@ -20,7 +20,7 @@ _TEMPLATE_MAP = {
     },
     "nebius": {
         "dev": "h100",         # single H100 GPU
-        "cluster": "cpu-h100", # CPU head + H100 workers
+        "cluster": "cpu-h100s", # CPU head + H100 workers
     },
 }
 

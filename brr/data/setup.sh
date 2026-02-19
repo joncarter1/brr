@@ -17,8 +17,8 @@ if [ -d /etc/needrestart/conf.d ]; then
 fi
 
 # Source config if available (copied to remote via file_mounts)
-if [ -f "$HOME/brr/config.env" ]; then
-  source "$HOME/brr/config.env"
+if [ -f "/tmp/brr/config.env" ]; then
+  source "/tmp/brr/config.env"
 fi
 
 # Defaults (used if config.env not present)
@@ -96,11 +96,32 @@ if [ "${PROVIDER:-aws}" = "aws" ] && [ -n "${EFS_ID:-}" ]; then
       | sudo tee -a /etc/fstab >/dev/null
   fi
 
-  # Persistent code directory on EFS
-  mkdir -p "$MOUNT_POINT/code"
-  chown ubuntu:ubuntu "$MOUNT_POINT/code"
-  ln -sfn "$MOUNT_POINT/code" "$HOME/code"
-  info "Linked ~/code → $MOUNT_POINT/code"
+  # Save ray_bootstrap_config.yaml before bind-mount shadows it
+  # (Ray writes this during file_mounts, before our setup_commands run)
+  if [ -f "$HOME/ray_bootstrap_config.yaml" ] && [ ! -L "$HOME/ray_bootstrap_config.yaml" ]; then
+    cp "$HOME/ray_bootstrap_config.yaml" /tmp/ray_bootstrap_config.yaml
+  fi
+
+  # Persistent home directory on EFS
+  if ! mountpoint -q "$HOME" 2>/dev/null; then
+    if [ ! -d "$MOUNT_POINT/home/ubuntu" ]; then
+      info "First boot: seeding persistent home on $MOUNT_POINT"
+      mkdir -p "$MOUNT_POINT/home/ubuntu"
+      rsync -a "$HOME/" "$MOUNT_POINT/home/ubuntu/"
+    fi
+    sudo mount --bind "$MOUNT_POINT/home/ubuntu" "$HOME"
+    info "Home bind-mounted from $MOUNT_POINT"
+  fi
+
+  # Persistent code directory
+  mkdir -p "$HOME/code"
+
+  # Redirect ray_bootstrap_config.yaml to instance-local storage
+  # (Ray hardcodes this to ~/, can't relocate)
+  if [ ! -L "$HOME/ray_bootstrap_config.yaml" ]; then
+    rm -f "$HOME/ray_bootstrap_config.yaml"
+    ln -sfn /tmp/ray_bootstrap_config.yaml "$HOME/ray_bootstrap_config.yaml"
+  fi
 fi
 
 # --- Shared filesystem mount (Nebius virtiofs) ---
@@ -122,10 +143,30 @@ if [ "${PROVIDER:-}" = "nebius" ] && [ -n "${NEBIUS_FILESYSTEM_ID:-}" ]; then
     echo "brr-shared $MOUNT_POINT virtiofs defaults 0 0" | sudo tee -a /etc/fstab >/dev/null
   fi
 
-  # Persistent code directory on shared filesystem
-  mkdir -p "$MOUNT_POINT/code"
-  ln -sfn "$MOUNT_POINT/code" "$HOME/code"
-  info "Linked ~/code -> $MOUNT_POINT/code"
+  # Save ray_bootstrap_config.yaml before bind-mount shadows it
+  if [ -f "$HOME/ray_bootstrap_config.yaml" ] && [ ! -L "$HOME/ray_bootstrap_config.yaml" ]; then
+    cp "$HOME/ray_bootstrap_config.yaml" /tmp/ray_bootstrap_config.yaml
+  fi
+
+  # Persistent home directory on shared filesystem
+  if ! mountpoint -q "$HOME" 2>/dev/null; then
+    if [ ! -d "$MOUNT_POINT/home/ubuntu" ]; then
+      info "First boot: seeding persistent home on $MOUNT_POINT"
+      mkdir -p "$MOUNT_POINT/home/ubuntu"
+      rsync -a "$HOME/" "$MOUNT_POINT/home/ubuntu/"
+    fi
+    sudo mount --bind "$MOUNT_POINT/home/ubuntu" "$HOME"
+    info "Home bind-mounted from $MOUNT_POINT"
+  fi
+
+  # Persistent code directory
+  mkdir -p "$HOME/code"
+
+  # Redirect ray_bootstrap_config.yaml to instance-local storage
+  if [ ! -L "$HOME/ray_bootstrap_config.yaml" ]; then
+    rm -f "$HOME/ray_bootstrap_config.yaml"
+    ln -sfn /tmp/ray_bootstrap_config.yaml "$HOME/ray_bootstrap_config.yaml"
+  fi
 fi
 
 # --- AWS CLI ---
@@ -142,33 +183,11 @@ if [ "${PROVIDER:-aws}" = "aws" ]; then
   fi
 fi
 
-# --- GitHub SSH access (AWS Secrets Manager) ---
-if [ "${PROVIDER:-aws}" = "aws" ] && [ -n "${GITHUB_SSH_SECRET:-}" ]; then
-  REGION="${AWS_REGION:-$(curl -s http://169.254.169.254/latest/meta-data/placement/region)}"
-  info "Fetching GitHub SSH key from Secrets Manager"
+# --- GitHub SSH access (copied via file_mounts) ---
+if [ -f "/tmp/brr/github_key" ]; then
+  info "Configuring GitHub SSH access"
   mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
-  aws secretsmanager get-secret-value \
-    --secret-id "$GITHUB_SSH_SECRET" \
-    --region "$REGION" \
-    --query SecretString --output text > "$HOME/.ssh/github_key"
-  chmod 600 "$HOME/.ssh/github_key"
-
-  if ! grep -q 'Host github.com' "$HOME/.ssh/config" 2>/dev/null; then
-    cat >> "$HOME/.ssh/config" <<'SSHCFG'
-Host github.com
-  IdentityFile ~/.ssh/github_key
-  StrictHostKeyChecking accept-new
-SSHCFG
-    chmod 600 "$HOME/.ssh/config"
-  fi
-  info "GitHub SSH access configured"
-fi
-
-# --- GitHub SSH access (file_mounts — non-AWS providers) ---
-if [ "${PROVIDER:-}" != "aws" ] && [ -f "$HOME/brr/github_key" ]; then
-  info "Configuring GitHub SSH access from file_mounts"
-  mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
-  cp "$HOME/brr/github_key" "$HOME/.ssh/github_key"
+  cp "/tmp/brr/github_key" "$HOME/.ssh/github_key"
   chmod 600 "$HOME/.ssh/github_key"
 
   if ! grep -q 'Host github.com' "$HOME/.ssh/config" 2>/dev/null; then
@@ -260,8 +279,8 @@ if [ -z "$UV_BIN" ]; then
   UV_BIN="uv"
 fi
 
-# Create virtual environment at $HOME/.venv if absent
-VENVDIR="$HOME/.venv"
+# Create virtual environment at /tmp/brr/venv if absent (instance-local, not in home)
+VENVDIR="/tmp/brr/venv"
 _WANT_PY="${PYTHON_VERSION:-3.11}"
 if [ ! -d "$VENVDIR" ]; then
   info "Creating Python ${_WANT_PY} virtual environment at $VENVDIR"
@@ -310,13 +329,13 @@ if [ "${PROVIDER:-}" = "nebius" ]; then
 
   # Make brr.nebius.node_provider importable via .pth file
   for sp in "$VENVDIR"/lib/python3.*/site-packages; do
-    echo "$HOME/brr/provider_lib" > "$sp/brr_provider.pth"
+    echo "/tmp/brr/provider_lib" > "$sp/brr_provider.pth"
   done
 
   # Place credentials where the SDK expects them
-  if [ -f "$HOME/brr/nebius_credentials.json" ]; then
+  if [ -f "/tmp/brr/nebius_credentials.json" ]; then
     mkdir -p "$HOME/.nebius"
-    cp "$HOME/brr/nebius_credentials.json" "$HOME/.nebius/credentials.json"
+    cp "/tmp/brr/nebius_credentials.json" "$HOME/.nebius/credentials.json"
     info "Nebius credentials configured"
   fi
 fi
@@ -326,7 +345,7 @@ fi
 #   1. In-place wrapper at ~/.local/bin/uv (replaces real binary, which is
 #      moved to ~/.local/lib/uv). Routes project venvs to /tmp to avoid EFS IO.
 #      Works regardless of shell config, PATH order, or dotfiles.
-#   2. /etc/profile.d/brr.sh for environment variables (PATH, UV_CACHE_DIR, .extra).
+#   2. /etc/profile.d/brr.sh for environment variables (PATH, UV_CACHE_DIR).
 
 UV_DIR="$HOME/.local/bin"
 UV_REAL="$HOME/.local/lib/uv"
@@ -346,6 +365,7 @@ fi
 cat > "$UV_LINK" <<'UVWRAP'
 #!/bin/bash
 export UV_CACHE_DIR="/tmp/uv"
+export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"
 _repo_root=$(timeout 3 git rev-parse --show-toplevel 2>/dev/null)
 if [ -n "$_repo_root" ]; then
   export UV_PROJECT_ENVIRONMENT="/tmp/venvs/$(basename "$_repo_root")"
@@ -366,7 +386,7 @@ PYWRAP
 done
 
 # Symlink system tools from base venv into ~/.local/bin so they're available
-# without putting all of ~/.venv/bin on PATH (which would shadow our wrappers).
+# without putting all of /tmp/brr/venv/bin on PATH (which would shadow our wrappers).
 for tool in ray pip; do
   [ -x "$VENVDIR/bin/$tool" ] && ln -sf "$VENVDIR/bin/$tool" "$UV_DIR/$tool"
 done
@@ -379,11 +399,7 @@ sudo tee /etc/profile.d/brr.sh >/dev/null <<'BRRSH'
 export _BRR_ENV_LOADED=1
 
 export UV_CACHE_DIR="/tmp/uv"
-
-# Source user extras (API keys, dotfiles overrides)
-if [ -f "$HOME/.extra" ]; then
-  . "$HOME/.extra"
-fi
+export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"
 BRRSH
 # Also source from /etc/bash.bashrc for non-login bash shells (tmux)
 if ! grep -q 'profile.d/brr.sh' /etc/bash.bashrc 2>/dev/null; then
@@ -403,7 +419,7 @@ sudo systemctl restart sshd 2>/dev/null || sudo systemctl restart ssh
 if [ "${IDLE_SHUTDOWN_ENABLED}" = "true" ]; then
   info "Installing idle-shutdown daemon"
 
-  sudo cp "$HOME/brr/idle-shutdown.sh" /usr/local/bin/idle-shutdown
+  sudo cp "/tmp/brr/idle-shutdown.sh" /usr/local/bin/idle-shutdown
   sudo chmod 755 /usr/local/bin/idle-shutdown
 
   sudo tee /etc/systemd/system/idle-shutdown.service >/dev/null <<UNIT

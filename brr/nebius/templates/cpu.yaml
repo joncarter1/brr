@@ -25,7 +25,7 @@ available_node_types:
       image_family: ubuntu22.04-driverless
       subnet_id: "{{NEBIUS_SUBNET_ID}}"
       disk_size_gb: 50
-      disk_type: network-ssd-nonreplicated
+      disk_type: network-ssd
   ray.worker.default:
     min_workers: 0
     max_workers: 2
@@ -37,12 +37,12 @@ available_node_types:
       image_family: ubuntu22.04-driverless
       subnet_id: "{{NEBIUS_SUBNET_ID}}"
       disk_size_gb: 50
-      disk_type: network-ssd-nonreplicated
+      disk_type: network-ssd
 
 head_start_ray_commands:
-    - source $HOME/.venv/bin/activate && ray stop
-    - source $HOME/.venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
+    - source /tmp/brr/venv/bin/activate && ray stop
+    - source /tmp/brr/venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
 
 worker_start_ray_commands:
-    - source $HOME/.venv/bin/activate && ray stop
-    - source $HOME/.venv/bin/activate && ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076
+    - source /tmp/brr/venv/bin/activate && ray stop
+    - source /tmp/brr/venv/bin/activate && ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076

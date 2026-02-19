@@ -58,12 +58,12 @@ def _wait_ssh(ip, key_path, timeout=180):
 
 
 def _upload_staging(ip, key_path, staging_dir):
-    """Upload staging files to ~/brr/ on the remote instance."""
+    """Upload staging files to /tmp/brr/ on the remote instance."""
     result = subprocess.run(
         [
             "scp", "-o", "StrictHostKeyChecking=accept-new",
             "-i", key_path, "-r",
-        ] + [str(f) for f in staging_dir.iterdir()] + [f"ubuntu@{ip}:brr/"],
+        ] + [str(f) for f in staging_dir.iterdir()] + [f"ubuntu@{ip}:/tmp/brr/"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -86,7 +86,6 @@ def _run_remote(ip, key_path, command):
 # into the AMI, and mounts/dotfiles require credentials not available on
 # the ephemeral bake instance.
 _BAKE_STRIP_KEYS = {
-    "GITHUB_SSH_SECRET", "EC2_SSH_SECRET",
     "GITHUB_SSH_KEY",
     "EFS_ID", "NEBIUS_FILESYSTEM_ID",
     "DOTFILES_REPO",
@@ -199,15 +198,14 @@ def _bake_aws_image(image_type, config):
         # Prepare and upload staging
         staging = _prepare_bake_staging()
         with console.status("[bold green]Uploading setup files..."):
-            # Ensure ~/brr/ exists on remote
-            _run_remote(ip, key_path, "mkdir -p ~/brr")
+            _run_remote(ip, key_path, "mkdir -p /tmp/brr")
             _upload_staging(ip, key_path, staging)
 
         console.print("[green]Files uploaded[/green]")
 
         # Run setup.sh
         console.print("[bold]Running setup.sh...[/bold]")
-        rc = _run_remote(ip, key_path, "bash ~/brr/setup.sh")
+        rc = _run_remote(ip, key_path, "bash /tmp/brr/setup.sh")
         if rc != 0:
             console.print(f"[red]setup.sh failed with exit code {rc}[/red]")
             return None
@@ -215,7 +213,7 @@ def _bake_aws_image(image_type, config):
         console.print("[green]Setup complete[/green]")
 
         # Clean up staging files on remote so they don't end up in the AMI
-        _run_remote(ip, key_path, "rm -rf ~/brr")
+        _run_remote(ip, key_path, "rm -rf /tmp/brr")
 
         # Create AMI
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -313,6 +311,7 @@ def aws(image_type):
 
     console.print()
     console.print("[bold green]Done![/bold green] Baked images will be used automatically on next `brr up`.")
+    console.print("[dim]Tip: run `brr clean` to terminate stopped instances still using old images.[/dim]")
 
 
 # ---------------------------------------------------------------------------
@@ -459,14 +458,14 @@ async def _bake_nebius_image_async(image_type, config):
             # 5. Prepare and upload staging
             staging = _prepare_bake_staging(provider="nebius")
             with console.status("[bold green]Uploading setup files..."):
-                _run_remote(ip, ssh_key_path, "mkdir -p ~/brr")
+                _run_remote(ip, ssh_key_path, "mkdir -p /tmp/brr")
                 _upload_staging(ip, ssh_key_path, staging)
 
             console.print("[green]Files uploaded[/green]")
 
             # 6. Run setup.sh
             console.print("[bold]Running setup.sh...[/bold]")
-            rc = _run_remote(ip, ssh_key_path, "bash ~/brr/setup.sh")
+            rc = _run_remote(ip, ssh_key_path, "bash /tmp/brr/setup.sh")
             if rc != 0:
                 console.print(f"[red]setup.sh failed with exit code {rc}[/red]")
                 return None
@@ -474,7 +473,7 @@ async def _bake_nebius_image_async(image_type, config):
             console.print("[green]Setup complete[/green]")
 
             # 7. Clean up staging on remote
-            _run_remote(ip, ssh_key_path, "rm -rf ~/brr")
+            _run_remote(ip, ssh_key_path, "rm -rf /tmp/brr")
 
             # 8. Stop instance (image creation requires disk not attached to running instance)
             with console.status("[bold green]Stopping instance..."):
@@ -608,6 +607,7 @@ def nebius(image_type):
 
     console.print()
     console.print("[bold green]Done![/bold green] Baked images will be used automatically on next `brr up`.")
+    console.print("[dim]Tip: run `brr clean` to terminate stopped instances still using old images.[/dim]")
 
 
 @bake.command()

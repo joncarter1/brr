@@ -42,9 +42,9 @@ available_node_types:
             VolumeType: gp3
 
 head_start_ray_commands:
-  - source $HOME/.venv/bin/activate && ray stop
-  - source $HOME/.venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
+  - cd $HOME/code/brr && uv run --group brrray stop
+  - cd $HOME/code/brr && uv run --group brrray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
 
 worker_start_ray_commands:
-  - source $HOME/.venv/bin/activate && ray stop
-  - source $HOME/.venv/bin/activate && ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076
+  - cd $HOME/code/brr && uv run --group brrray stop
+  - cd $HOME/code/brr && uv run --group brrray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076

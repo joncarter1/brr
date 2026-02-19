@@ -246,8 +246,8 @@ def delete_github_ssh(region):
     return deleted
 
 
-def _nuke_nebius(project_id, progress, task):
-    """Terminate all Nebius instances and delete disks in a project."""
+def _nuke_nebius(project_id, progress, task, instances=True, disks=True, filesystems=True):
+    """Terminate Nebius resources in a project."""
     import asyncio
     from brr.nebius.nodes import _nebius_sdk
 
@@ -262,55 +262,70 @@ def _nuke_nebius(project_id, progress, task):
         stats = {"instances": 0, "disks": 0, "filesystems": 0}
 
         async with sdk:
-            # Phase 1: Terminate all instances
-            progress.update(task, description="[red]Terminating Nebius instances...[/red]")
-            inst_client = InstanceServiceClient(sdk)
-            resp = await inst_client.list(ListInstancesRequest(parent_id=project_id))
+            if instances:
+                progress.update(task, description="[red]Terminating Nebius instances...[/red]")
+                inst_client = InstanceServiceClient(sdk)
+                resp = await inst_client.list(ListInstancesRequest(parent_id=project_id))
 
-            for inst in resp.items:
-                state = inst.status.state if inst.status else None
-                # Skip already terminated/deleting
-                state_str = str(state)
-                if any(s in state_str for s in ("DELETED", "DELETING", "7", "8")):
-                    continue
-                try:
-                    name = inst.metadata.name or inst.metadata.id
-                    op = await inst_client.delete(DeleteInstanceRequest(id=inst.metadata.id))
-                    await op.wait()
-                    stats["instances"] += 1
-                    console.print(f"  Terminated: [red]{name}[/red]")
-                except Exception as e:
-                    console.print(f"  [yellow]Failed to terminate {inst.metadata.id}: {e}[/yellow]")
+                for inst in resp.items:
+                    state = inst.status.state if inst.status else None
+                    state_str = str(state)
+                    if any(s in state_str for s in ("DELETED", "DELETING", "7", "8")):
+                        continue
+                    try:
+                        name = inst.metadata.name or inst.metadata.id
+                        op = await inst_client.delete(DeleteInstanceRequest(id=inst.metadata.id))
+                        await op.wait()
+                        stats["instances"] += 1
+                        console.print(f"  Terminated: [red]{name}[/red]")
+                    except Exception as e:
+                        console.print(f"  [yellow]Failed to terminate {inst.metadata.id}: {e}[/yellow]")
 
-            # Phase 2: Delete disks
-            progress.update(task, description="[red]Deleting Nebius disks...[/red]")
-            disk_client = DiskServiceClient(sdk)
-            resp = await disk_client.list(ListDisksRequest(parent_id=project_id))
+            if disks:
+                progress.update(task, description="[red]Deleting Nebius disks...[/red]")
+                disk_client = DiskServiceClient(sdk)
+                resp = await disk_client.list(ListDisksRequest(parent_id=project_id))
 
-            for disk in resp.items:
-                try:
-                    name = disk.metadata.name or disk.metadata.id
-                    op = await disk_client.delete(DeleteDiskRequest(id=disk.metadata.id))
-                    await op.wait()
-                    stats["disks"] += 1
-                    console.print(f"  Deleted disk: [red]{name}[/red]")
-                except Exception as e:
-                    console.print(f"  [yellow]Failed to delete disk {disk.metadata.id}: {e}[/yellow]")
+                # Disks may still be attached after instance deletion completes.
+                # Retry with backoff for disks that fail with FAILED_PRECONDITION.
+                pending = [(disk.metadata.id, disk.metadata.name or disk.metadata.id) for disk in resp.items]
+                max_attempts = 6
+                for attempt in range(max_attempts):
+                    if not pending:
+                        break
+                    if attempt > 0:
+                        wait = 10 * attempt
+                        progress.update(task, description=f"[red]Waiting {wait}s for disks to detach...[/red]")
+                        await asyncio.sleep(wait)
+                        progress.update(task, description="[red]Retrying disk deletion...[/red]")
+                    still_pending = []
+                    for disk_id, name in pending:
+                        try:
+                            op = await disk_client.delete(DeleteDiskRequest(id=disk_id))
+                            await op.wait()
+                            stats["disks"] += 1
+                            console.print(f"  Deleted disk: [red]{name}[/red]")
+                        except Exception as e:
+                            if "FAILED_PRECONDITION" in str(e) and attempt < max_attempts - 1:
+                                still_pending.append((disk_id, name))
+                            else:
+                                console.print(f"  [yellow]Failed to delete disk {disk_id}: {e}[/yellow]")
+                    pending = still_pending
 
-            # Phase 3: Delete filesystems
-            progress.update(task, description="[red]Deleting Nebius filesystems...[/red]")
-            fs_client = FilesystemServiceClient(sdk)
-            resp = await fs_client.list(ListFilesystemsRequest(parent_id=project_id))
+            if filesystems:
+                progress.update(task, description="[red]Deleting Nebius filesystems...[/red]")
+                fs_client = FilesystemServiceClient(sdk)
+                resp = await fs_client.list(ListFilesystemsRequest(parent_id=project_id))
 
-            for fs in resp.items:
-                try:
-                    name = fs.metadata.name or fs.metadata.id
-                    op = await fs_client.delete(DeleteFilesystemRequest(id=fs.metadata.id))
-                    await op.wait()
-                    stats["filesystems"] += 1
-                    console.print(f"  Deleted filesystem: [red]{name}[/red]")
-                except Exception as e:
-                    console.print(f"  [yellow]Failed to delete filesystem {fs.metadata.id}: {e}[/yellow]")
+                for fs in resp.items:
+                    try:
+                        name = fs.metadata.name or fs.metadata.id
+                        op = await fs_client.delete(DeleteFilesystemRequest(id=fs.metadata.id))
+                        await op.wait()
+                        stats["filesystems"] += 1
+                        console.print(f"  Deleted filesystem: [red]{name}[/red]")
+                    except Exception as e:
+                        console.print(f"  [yellow]Failed to delete filesystem {fs.metadata.id}: {e}[/yellow]")
 
         return stats
 
@@ -340,37 +355,50 @@ def nuke(force, region, provider):
         console.print("[yellow]No configured providers to nuke.[/yellow]")
         return
 
-    # Warning panel
-    items = []
+    # Build resource type choices
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    choices = []
     if "aws" in targets:
-        items.extend([
-            "- All EC2 instances",
-            "- All VPCs and networking",
-            "- All Elastic IPs",
-            "- All Key Pairs",
-            "- All available EBS volumes",
-            "- GitHub SSH keys (Secrets Manager + GitHub)",
+        choices.extend([
+            Choice(value="aws_instances", name="AWS — EC2 instances", enabled=True),
+            Choice(value="aws_vpcs", name="AWS — VPCs and networking", enabled=True),
+            Choice(value="aws_eips", name="AWS — Elastic IPs", enabled=True),
+            Choice(value="aws_keys", name="AWS — Key pairs", enabled=True),
+            Choice(value="aws_volumes", name="AWS — EBS volumes", enabled=True),
+            Choice(value="aws_secrets", name="AWS — Secrets and SSH keys", enabled=True),
         ])
     if "nebius" in targets:
-        items.extend([
-            "- All Nebius compute instances",
-            "- All Nebius disks",
-            "- All Nebius shared filesystems",
+        choices.extend([
+            Choice(value="nebius_instances", name="Nebius — Compute instances", enabled=True),
+            Choice(value="nebius_disks", name="Nebius — Disks", enabled=True),
+            Choice(value="nebius_filesystems", name="Nebius — Shared filesystems", enabled=True),
         ])
 
-    console.print(Panel.fit(
-        "[bold red]EXTREME DANGER[/bold red]\n\n"
-        f"Providers: {', '.join(targets)}\n\n"
-        "This will PERMANENTLY DELETE:\n"
-        + "\n".join(items) +
-        "\n\n[bold]This action cannot be undone![/bold]",
-        title="[bold red]NUCLEAR DELETION WARNING[/bold red]",
-        border_style="red"
-    ))
+    if force:
+        selected = [c.value for c in choices]
+    else:
+        console.print(Panel.fit(
+            "[bold red]EXTREME DANGER[/bold red]\n\n"
+            f"Providers: {', '.join(targets)}\n\n"
+            "[bold]This action cannot be undone![/bold]",
+            title="[bold red]NUCLEAR DELETION WARNING[/bold red]",
+            border_style="red"
+        ))
+        selected = inquirer.checkbox(
+            message="Select resources to destroy",
+            choices=choices,
+            instruction="(space to toggle, enter to confirm)",
+        ).execute()
+
+    if not selected:
+        console.print("[yellow]Nothing selected. Aborted.[/yellow]")
+        return
 
     if not force:
-        confirmation = console.input("\n[bold red]Type 'DESTROY EVERYTHING' to confirm: [/bold red]")
-        if confirmation != "DESTROY EVERYTHING":
+        confirmation = console.input("\n[bold red]Type 'DESTROY' to confirm: [/bold red]")
+        if confirmation != "DESTROY":
             console.print("[yellow]Aborted. Nothing was deleted.[/yellow]")
             return
 
@@ -389,89 +417,129 @@ def nuke(force, region, provider):
         if "aws" in targets:
             regions = [region] if region else get_regions()
 
-            progress.update(task, description=f"[red]Terminating EC2 instances across {len(regions)} regions...[/red]")
-            all_terminated = []
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(terminate_instances, r) for r in regions]
-                for future in as_completed(futures):
-                    all_terminated.extend(future.result())
+            if "aws_instances" in selected:
+                progress.update(task, description=f"[red]Terminating EC2 instances across {len(regions)} regions...[/red]")
+                all_terminated = []
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = [executor.submit(terminate_instances, r) for r in regions]
+                    for future in as_completed(futures):
+                        all_terminated.extend(future.result())
+                if all_terminated:
+                    console.print(f"\n[red]Terminated {len(all_terminated)} instances[/red]")
+                    for instance_id, name, r in all_terminated[:10]:
+                        console.print(f"  - {instance_id} ({name}) in {r}")
+                    if len(all_terminated) > 10:
+                        console.print(f"  ... and {len(all_terminated) - 10} more")
+                    progress.update(task, description="[yellow]Waiting for instances to terminate...[/yellow]")
+                    time.sleep(30)
+                aws_stats["instances"] = len(all_terminated)
 
-            if all_terminated:
-                console.print(f"\n[red]Terminated {len(all_terminated)} instances[/red]")
-                for instance_id, name, r in all_terminated[:10]:
-                    console.print(f"  - {instance_id} ({name}) in {r}")
-                if len(all_terminated) > 10:
-                    console.print(f"  ... and {len(all_terminated) - 10} more")
-                progress.update(task, description="[yellow]Waiting for instances to terminate...[/yellow]")
-                time.sleep(30)
+            if "aws_vpcs" in selected:
+                progress.update(task, description="[red]Deleting VPCs and networking...[/red]")
+                all_vpcs = []
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = [executor.submit(delete_vpcs, r) for r in regions]
+                    for future in as_completed(futures):
+                        all_vpcs.extend(future.result())
+                if all_vpcs:
+                    console.print(f"\n[red]Deleted {len(all_vpcs)} VPCs[/red]")
+                aws_stats["vpcs"] = len(all_vpcs)
 
-            progress.update(task, description="[red]Deleting VPCs and networking...[/red]")
-            all_vpcs = []
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(delete_vpcs, r) for r in regions]
-                for future in as_completed(futures):
-                    all_vpcs.extend(future.result())
-            if all_vpcs:
-                console.print(f"\n[red]Deleted {len(all_vpcs)} VPCs[/red]")
+            if "aws_eips" in selected:
+                progress.update(task, description="[red]Releasing Elastic IPs...[/red]")
+                all_eips = []
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = [executor.submit(release_elastic_ips, r) for r in regions]
+                    for future in as_completed(futures):
+                        all_eips.extend(future.result())
+                aws_stats["eips"] = len(all_eips)
 
-            progress.update(task, description="[red]Releasing Elastic IPs...[/red]")
-            all_eips = []
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(release_elastic_ips, r) for r in regions]
-                for future in as_completed(futures):
-                    all_eips.extend(future.result())
+            if "aws_keys" in selected:
+                progress.update(task, description="[red]Deleting key pairs...[/red]")
+                all_keys = []
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = [executor.submit(delete_key_pairs, r) for r in regions]
+                    for future in as_completed(futures):
+                        all_keys.extend(future.result())
+                aws_stats["keys"] = len(all_keys)
 
-            progress.update(task, description="[red]Deleting key pairs...[/red]")
-            all_keys = []
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(delete_key_pairs, r) for r in regions]
-                for future in as_completed(futures):
-                    all_keys.extend(future.result())
+            if "aws_volumes" in selected:
+                progress.update(task, description="[red]Deleting available EBS volumes...[/red]")
+                all_volumes = []
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = [executor.submit(delete_volumes, r) for r in regions]
+                    for future in as_completed(futures):
+                        all_volumes.extend(future.result())
+                aws_stats["volumes"] = len(all_volumes)
 
-            progress.update(task, description="[red]Deleting available EBS volumes...[/red]")
-            all_volumes = []
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(delete_volumes, r) for r in regions]
-                for future in as_completed(futures):
-                    all_volumes.extend(future.result())
+            if "aws_secrets" in selected:
+                progress.update(task, description="[red]Cleaning up secrets and SSH keys...[/red]")
+                all_github_ssh = delete_github_ssh(regions[0])
 
-            progress.update(task, description="[red]Cleaning up secrets and SSH keys...[/red]")
-            all_github_ssh = delete_github_ssh(regions[0])
-
-            import boto3
-            sm = boto3.client("secretsmanager", region_name=regions[0])
-            for secret_name in ["brr-ec2-ssh-key"]:
-                try:
-                    sm.delete_secret(SecretId=secret_name, ForceDeleteWithoutRecovery=True)
-                    console.print(f"  Deleted Secrets Manager secret: [red]{secret_name}[/red]")
-                except sm.exceptions.ResourceNotFoundException:
-                    pass
-
-            aws_stats = {
-                "instances": len(all_terminated),
-                "vpcs": len(all_vpcs),
-                "eips": len(all_eips),
-                "keys": len(all_keys),
-                "volumes": len(all_volumes),
-                "github_ssh": len(all_github_ssh),
-            }
+                import boto3
+                sm = boto3.client("secretsmanager", region_name=regions[0])
+                for secret_name in ["brr-ec2-ssh-key"]:
+                    try:
+                        sm.delete_secret(SecretId=secret_name, ForceDeleteWithoutRecovery=True)
+                        console.print(f"  Deleted Secrets Manager secret: [red]{secret_name}[/red]")
+                    except sm.exceptions.ResourceNotFoundException:
+                        pass
+                aws_stats["github_ssh"] = len(all_github_ssh)
 
         # --- Nebius ---
         if "nebius" in targets:
-            nebius_stats = _nuke_nebius(config["NEBIUS_PROJECT_ID"], progress, task)
+            nebius_selected = [s for s in selected if s.startswith("nebius_")]
+            if nebius_selected:
+                nebius_stats = _nuke_nebius(
+                    config["NEBIUS_PROJECT_ID"], progress, task,
+                    instances="nebius_instances" in selected,
+                    disks="nebius_disks" in selected,
+                    filesystems="nebius_filesystems" in selected,
+                )
+                # Clear stale resource IDs from config
+                if nebius_stats.get("filesystems"):
+                    from brr.state import write_config
+                    config["NEBIUS_FILESYSTEM_ID"] = ""
+                    write_config(config)
+                    console.print("[dim]Cleared NEBIUS_FILESYSTEM_ID from config[/dim]")
 
         # Clean up local SSH config entries (scoped to targeted providers)
-        progress.update(task, description="[red]Cleaning up local SSH config...[/red]")
-        from brr.aws.nodes import remove_ssh_config
-        import re
-        ssh_config_path = os.path.expanduser("~/.ssh/config")
-        if os.path.exists(ssh_config_path):
-            with open(ssh_config_path) as f:
-                content = f.read()
-            for alias in re.findall(r"^Host (brr-\S+)", content, re.MULTILINE):
-                # e.g. brr-aws-h100, brr-nebius-cpu
-                if any(alias.startswith(f"brr-{t}-") for t in targets):
-                    remove_ssh_config(alias)
+        has_instance_deletion = "aws_instances" in selected or "nebius_instances" in selected
+        if has_instance_deletion:
+            progress.update(task, description="[red]Cleaning up local SSH config...[/red]")
+            from brr.ssh import remove_ssh_config
+            import re
+            ssh_config_path = os.path.expanduser("~/.ssh/config")
+            if os.path.exists(ssh_config_path):
+                with open(ssh_config_path) as f:
+                    content = f.read()
+                for alias in re.findall(r"^Host (brr-\S+)", content, re.MULTILINE):
+                    if "aws_instances" in selected and alias.startswith("brr-aws-"):
+                        remove_ssh_config(alias)
+                    elif "nebius_instances" in selected and alias.startswith("brr-nebius-"):
+                        remove_ssh_config(alias)
+
+        # Clean up staging directories
+        progress.update(task, description="[red]Cleaning up staging files...[/red]")
+        from brr.state import STATE_DIR
+        staging_dir = STATE_DIR / "staging"
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)
+            console.print(f"[dim]Removed {staging_dir}[/dim]")
+
+        # Clear stale config values for deleted AWS resources
+        if aws_stats:
+            from brr.state import write_config
+            stale_keys = []
+            if aws_stats.get("keys"):
+                config["AWS_KEY_NAME"] = ""
+                stale_keys.append("AWS_KEY_NAME")
+            if aws_stats.get("vpcs"):
+                config["AWS_SECURITY_GROUP"] = ""
+                stale_keys.append("AWS_SECURITY_GROUP")
+            if stale_keys:
+                write_config(config)
+                console.print(f"[dim]Cleared {', '.join(stale_keys)} from config[/dim]")
 
         progress.update(task, description="[bold green]Nuclear deletion complete![/bold green]")
 
@@ -479,16 +547,24 @@ def nuke(force, region, provider):
     lines = []
     if aws_stats:
         lines.append("[bold]AWS:[/bold]")
-        lines.append(f"  Instances terminated: {aws_stats['instances']}")
-        lines.append(f"  VPCs deleted: {aws_stats['vpcs']}")
-        lines.append(f"  Elastic IPs released: {aws_stats['eips']}")
-        lines.append(f"  Key pairs deleted: {aws_stats['keys']}")
-        lines.append(f"  Volumes deleted: {aws_stats['volumes']}")
+        for key, label in [
+            ("instances", "Instances terminated"),
+            ("vpcs", "VPCs deleted"),
+            ("eips", "Elastic IPs released"),
+            ("keys", "Key pairs deleted"),
+            ("volumes", "Volumes deleted"),
+        ]:
+            if key in aws_stats:
+                lines.append(f"  {label}: {aws_stats[key]}")
     if nebius_stats:
         lines.append("[bold]Nebius:[/bold]")
-        lines.append(f"  Instances terminated: {nebius_stats['instances']}")
-        lines.append(f"  Disks deleted: {nebius_stats['disks']}")
-        lines.append(f"  Filesystems deleted: {nebius_stats['filesystems']}")
+        for key, label in [
+            ("instances", "Instances terminated"),
+            ("disks", "Disks deleted"),
+            ("filesystems", "Filesystems deleted"),
+        ]:
+            if key in nebius_stats:
+                lines.append(f"  {label}: {nebius_stats[key]}")
 
     console.print("\n" + "=" * 50)
     console.print(Panel.fit(

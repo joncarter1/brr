@@ -6,7 +6,7 @@ from pathlib import Path
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
 
-from brr.state import is_provider_configured, CONFIG_DEFAULTS
+from brr.state import is_provider_configured
 from brr.templates import _template_dir
 
 
@@ -113,6 +113,12 @@ def init_cmd():
                 f"cluster_name: {repo_name}-{project_name}",
                 1,
             )
+            if is_uv_project:
+                project_dir = f"$HOME/code/{repo_name}"
+                content = content.replace(
+                    "source /tmp/brr/venv/bin/activate && ",
+                    f"cd {project_dir} && uv run --group brr ",
+                )
             dest = provider_dir / f"{project_name}.yaml"
             dest.write_text(content)
 
@@ -151,7 +157,7 @@ fi
 # Add project-specific dependencies below.
 set -Eeuo pipefail
 
-source "$HOME/.venv/bin/activate"
+source "/tmp/brr/venv/bin/activate"
 # uv pip install torch
 # uv pip install jax[cuda12]
 """
@@ -161,19 +167,6 @@ source "$HOME/.venv/bin/activate"
         click.echo(f"  .brr/{provider}/dev.yaml      Single GPU ({repo_name}-dev)")
         click.echo(f"  .brr/{provider}/cluster.yaml  CPU head + GPU workers ({repo_name}-cluster)")
         click.echo(f"  .brr/{provider}/setup.sh      Project deps (runs after global setup)")
-
-    # Scaffold project config.env if it doesn't exist
-    project_config = brr_dir / "config.env"
-    if not project_config.exists():
-        project_config.write_text(
-            '# Project config — overrides ~/.brr/config.env for this project.\n'
-            '# Uncomment and edit values as needed.\n'
-            '\n'
-            f'# IDLE_SHUTDOWN_TIMEOUT_MIN="{CONFIG_DEFAULTS["IDLE_SHUTDOWN_TIMEOUT_MIN"]}"\n'
-            '# DOTFILES_REPO="https://github.com/user/dotfiles"\n'
-            '# PYTHON_VERSION="3.11"\n'
-        )
-        click.echo(f"  .brr/config.env               Project config (overrides global)")
 
     click.echo(f"\nTemplates are standard Ray YAML — edit them or add your own.")
     click.echo(f"\nLaunch:")

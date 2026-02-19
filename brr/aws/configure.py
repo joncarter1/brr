@@ -189,39 +189,20 @@ def get_or_create_efs(efs_client, ec2, vpc_id, sg_id):
     return fs_id
 
 
-def setup_github_ssh(region, key_path):
-    """Upload EC2 SSH key to Secrets Manager and add public key to GitHub."""
-    import boto3
-    secret_name = "brr-github-ssh-key"
-    sm = boto3.client("secretsmanager", region_name=region)
-
-    try:
-        with open(key_path) as f:
-            private_key = f.read()
-        sm.create_secret(Name=secret_name, SecretString=private_key)
-        console.print(f"Uploaded SSH key to Secrets Manager: [green]{secret_name}[/green]")
-    except sm.exceptions.ResourceExistsException:
-        console.print(f"SSH key already in Secrets Manager: [green]{secret_name}[/green]")
-    except sm.exceptions.ClientError as e:
-        if e.response["Error"]["Code"] == "AccessDeniedException":
-            console.print(f"[red]Access denied for secretsmanager:CreateSecret[/red]")
-            console.print("[yellow]Attach the SecretsManager IAM policy from the README to your IAM user,[/yellow]")
-            console.print("[yellow]then re-run 'brr configure aws'.[/yellow]")
-            return ""
-        raise
-
+def setup_github_ssh(key_path):
+    """Add SSH public key to GitHub. Returns the private key path for file_mounts."""
     if not shutil.which("gh"):
-        console.print("[yellow]gh CLI not found — skipping GitHub key setup[/yellow]")
-        console.print("[yellow]Install gh and run 'brr configure aws' again to add the key to GitHub[/yellow]")
-        return secret_name
+        console.print("[yellow]gh CLI not found — skipping GitHub key registration[/yellow]")
+        console.print("[yellow]Install gh and run 'brr configure aws' again to add the key[/yellow]")
+        return key_path
 
     auth_check = subprocess.run(
         ["gh", "auth", "status"], capture_output=True, text=True
     )
     if auth_check.returncode != 0:
-        console.print("[yellow]gh CLI not authenticated — skipping GitHub key setup[/yellow]")
+        console.print("[yellow]gh CLI not authenticated — skipping GitHub key registration[/yellow]")
         console.print("[yellow]Run 'gh auth login' and then 'brr configure aws' again[/yellow]")
-        return secret_name
+        return key_path
 
     list_result = subprocess.run(
         ["gh", "ssh-key", "list"], capture_output=True, text=True
@@ -230,14 +211,14 @@ def setup_github_ssh(region, key_path):
         for line in list_result.stdout.splitlines():
             if "brr-aws" in line:
                 console.print("SSH key already registered on GitHub: [green]brr-aws[/green]")
-                return secret_name
+                return key_path
 
     pubkey_result = subprocess.run(
         ["ssh-keygen", "-y", "-f", key_path], capture_output=True, text=True
     )
     if pubkey_result.returncode != 0:
         console.print(f"[red]Failed to derive public key: {pubkey_result.stderr.strip()}[/red]")
-        return secret_name
+        return key_path
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pub", delete=False) as tmp:
         tmp.write(pubkey_result.stdout)
@@ -255,58 +236,7 @@ def setup_github_ssh(region, key_path):
     finally:
         os.unlink(tmp_path)
 
-    _attach_secretsmanager_policy(region)
-
-    return secret_name
-
-
-
-def _store_ec2_ssh_key(region, key_path):
-    """Store the EC2 SSH private key in Secrets Manager so cluster nodes can fetch it."""
-    import boto3
-    secret_name = "brr-ec2-ssh-key"
-    sm = boto3.client("secretsmanager", region_name=region)
-
-    with open(key_path) as f:
-        private_key = f.read()
-
-    try:
-        sm.create_secret(Name=secret_name, SecretString=private_key)
-        console.print(f"Stored EC2 SSH key in Secrets Manager: [green]{secret_name}[/green]")
-    except sm.exceptions.ResourceExistsException:
-        sm.put_secret_value(SecretId=secret_name, SecretString=private_key)
-        console.print(f"Updated EC2 SSH key in Secrets Manager: [green]{secret_name}[/green]")
-    except sm.exceptions.ClientError as e:
-        if e.response["Error"]["Code"] == "AccessDeniedException":
-            console.print("[red]Access denied for secretsmanager:CreateSecret[/red]")
-            console.print("[yellow]Attach the SecretsManager IAM policy from the README.[/yellow]")
-            return ""
-        raise
-
-    return secret_name
-
-
-def _attach_secretsmanager_policy(region):
-    """Attach Secrets Manager read policy to ray-autoscaler-v1 role."""
-    import boto3
-    iam = boto3.client("iam")
-    try:
-        iam.put_role_policy(
-            RoleName="ray-autoscaler-v1",
-            PolicyName="brr-secretsmanager-read",
-            PolicyDocument=json.dumps({
-                "Version": "2012-10-17",
-                "Statement": [{
-                    "Effect": "Allow",
-                    "Action": "secretsmanager:GetSecretValue",
-                    "Resource": f"arn:aws:secretsmanager:{region}:*:secret:brr-*"
-                }]
-            }),
-        )
-        console.print(f"Added Secrets Manager permission to [green]ray-autoscaler-v1[/green] role")
-    except iam.exceptions.NoSuchEntityException:
-        console.print("[yellow]IAM role 'ray-autoscaler-v1' not found yet (created on first cluster launch).[/yellow]")
-        console.print("[yellow]Permission will be added automatically on next `brr up`.[/yellow]")
+    return key_path
 
 
 def _attach_iam_passrole_policy():
@@ -407,7 +337,6 @@ def configure_aws():
         raise click.Abort()
 
     key_name, key_path = get_or_create_key(ec2, region)
-    ec2_ssh_secret = _store_ec2_ssh_key(region, key_path)
     _attach_iam_passrole_policy()
     _attach_ssm_policy()
 
@@ -418,11 +347,11 @@ def configure_aws():
 
     github_ssh_enabled = click.confirm(
         "Set up GitHub SSH access for clusters?",
-        default=bool(existing.get("GITHUB_SSH_SECRET", "")),
+        default=bool(existing.get("GITHUB_SSH_KEY", "")),
     )
-    github_ssh_secret = ""
+    github_ssh_key = ""
     if github_ssh_enabled:
-        github_ssh_secret = setup_github_ssh(region, key_path)
+        github_ssh_key = setup_github_ssh(key_path)
 
     updates = {
         "AWS_REGION": region,
@@ -432,8 +361,7 @@ def configure_aws():
         "EFS_ID": efs_id,
         "AMI_UBUNTU": ami_ubuntu,
         "AMI_DL": ami_dl,
-        "GITHUB_SSH_SECRET": github_ssh_secret,
-        "EC2_SSH_SECRET": ec2_ssh_secret,
+        "GITHUB_SSH_KEY": github_ssh_key,
     }
 
     merged = dict(existing)

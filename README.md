@@ -3,16 +3,15 @@
 Opinionated research infrastructure tooling. Launch clusters, get SSH access, start building.
 
 ## Features
-- **Shared filesystem** — All nodes share `~/code/` via EFS (AWS) or virtiofs (Nebius).
+- **Shared filesystem** — All nodes share `$HOME` via EFS (AWS) or virtiofs (Nebius).
 - **Coding tools** — Install Claude Code, Codex, or Gemini. Connect with e.g. `brr attach dev claude`
 - **Autoscaling** — Ray-based cluster scaling with cached instances.
 - **Project-based workflows** — Per-repo cluster configs and project-specific dependencies.
 - **Auto-shutdown** — Monitors CPU, GPU, and SSH activity. Shuts down idle instances to save costs.
-- **Dotfiles integration** — Take your dev environment (vim, tmux, shell config) to every cluster node via GNU Stow.
+- **Dotfiles integration** — Take your dev environment (vim, tmux, shell config) to every cluster node.
 
 ## Prerequisites
 
-- Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (for installation)
 
 ## Quick Start
@@ -22,7 +21,7 @@ Opinionated research infrastructure tooling. Launch clusters, get SSH access, st
 uv tool install brr-cli[aws]
 
 # Install (both providers)
-# uv tool install brr-cli[aws,nebius] 
+# uv tool install brr-cli[aws,nebius]
 
 # Configure (interactive wizard)
 brr configure      # or: brr configure nebius
@@ -59,13 +58,11 @@ This creates:
     dev.yaml        # Single GPU for development
     cluster.yaml    # CPU head + GPU workers
     setup.sh        # Project-specific dependencies
-  config.env        # Project config (overrides global)
 ```
 
-Templates are standard Ray YAML — edit them or add your own. Inside a project, use short names:
+Templates are Ray cluster YAML — edit them or add your own. Inside a project, use short names:
 
 ```sh
-brr up                  # launches DEFAULT_TEMPLATE (set in .brr/config.env)
 brr up dev              # launches .brr/aws/dev.yaml
 brr up cluster          # launches .brr/aws/cluster.yaml
 brr attach dev          # SSH into dev cluster
@@ -74,7 +71,7 @@ brr down dev            # tear down
 
 If your project uses `uv`, `brr init` automatically adds `brr-cli` and `ray` to a `brr` dependency group. The cluster uses your project-locked versions — no manual setup needed.
 
-Project config (`.brr/config.env`) overrides global settings (`~/.brr/config.env`). Use it for project-specific settings like idle timeouts or dotfiles.
+All global config lives in `~/.brr/config.env`.
 
 ## Templates
 
@@ -123,7 +120,7 @@ brr attach nebius:h100
 brr down nebius:h100
 ```
 
-Both providers can run simultaneously.
+Both providers can run simultaneously. For projects with multiple providers, use the prefix: `brr up aws:dev`.
 
 ## Customization
 
@@ -137,6 +134,20 @@ vim ~/.brr/setup.sh
 ```
 
 Project-specific dependencies go in `.brr/{provider}/setup.sh` (created by `brr init`), which runs after the global setup.
+
+### uv integration
+
+brr wraps the `uv` binary to route virtual environments away from the shared EFS home directory:
+
+| Environment variable | Value | Purpose |
+| :--- | :--- | :--- |
+| `UV_CACHE_DIR` | `/tmp/uv` | Download cache (per-instance) |
+| `UV_PYTHON_INSTALL_DIR` | `/tmp/uv/python` | Managed Python builds (per-instance) |
+| `UV_PROJECT_ENVIRONMENT` | `/tmp/venvs/{project}` | Project venvs (per-instance) |
+
+The wrapper lives at `~/.local/bin/uv` and delegates to the real binary at `~/.local/lib/uv`. Both persist on EFS so new instances reuse them without reinstalling. Only caches, Python builds, and venvs are per-instance (rebuilt on boot from lockfiles).
+
+For uv-managed projects, Ray runs inside the project venv via `uv run --group brr ray start`. For non-uv clusters, Ray runs from a standalone venv at `/tmp/brr/venv`.
 
 ### AI coding tools
 
@@ -188,7 +199,7 @@ IDLE_SHUTDOWN_GRACE_MIN="15"
 
 The grace period prevents shutdown during initial setup. Monitor on a node with `journalctl -u idle-shutdown -f`.
 
-### Node caching (Nebius)
+### Node caching
 
 By default, Nebius nodes are **deleted** on scale-down. Unlike AWS, stopped Nebius instances still incur disk charges, so deleting is cheaper.
 
@@ -199,7 +210,7 @@ provider:
   cache_stopped_nodes: true
 ```
 
-AWS nodes are cached (stopped) by default — this setting only affects Nebius.
+AWS nodes are cached (stopped) by default.
 
 ## Commands
 

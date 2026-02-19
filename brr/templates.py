@@ -59,36 +59,25 @@ def find_project_templates(project_root, provider=None):
     return sorted(p.stem for p in brr_dir.glob("*/*.yaml"))
 
 
-def resolve_default_template(project_root, project_config=None, provider=None):
+def resolve_default_template(project_root, provider=None):
     """Pick the default template for a project.
 
-    Uses DEFAULT_TEMPLATE from project config, or the sole .yaml if only one exists.
-    Scopes to provider subdirectory if given.
+    Returns the sole .yaml if only one exists, scoped to provider subdirectory if given.
     Raises click.UsageError if ambiguous.
     """
     import click
 
-    project_config = project_config or {}
     templates = find_project_templates(project_root, provider)
 
     if not templates:
         raise click.UsageError(f"No templates found in {project_root}/.brr/")
-
-    default = project_config.get("DEFAULT_TEMPLATE", "")
-    if default:
-        if default in templates:
-            return default
-        raise click.UsageError(
-            f"DEFAULT_TEMPLATE='{default}' not found in .brr/. "
-            f"Available: {', '.join(templates)}"
-        )
 
     if len(templates) == 1:
         return templates[0]
 
     raise click.UsageError(
         f"Multiple templates in .brr/: {', '.join(templates)}. "
-        "Specify one with `brr up <name>`, or set DEFAULT_TEMPLATE in .brr/config.env."
+        "Specify one with `brr up <name>`."
     )
 
 
@@ -361,18 +350,14 @@ def prepare_staging(name, provider="aws", project_root=None):
     if not project_setup_staged and (staging / "project-setup.sh").exists():
         (staging / "project-setup.sh").unlink()
 
-    # Write idle-shutdown.sh (always from built-in)
+    # Write idle-shutdown.sh and sync-repo.sh (always from built-in)
     (staging / "idle-shutdown.sh").write_text(pkg.joinpath("idle-shutdown.sh").read_text())
+    (staging / "sync-repo.sh").write_text(pkg.joinpath("sync-repo.sh").read_text())
 
     # Copy config.env, injecting PROVIDER for setup.sh to branch on.
-    # When in a project, append .brr/config.env so project settings override globals.
     config_text = ""
     if CONFIG_PATH.exists():
         config_text = CONFIG_PATH.read_text()
-    if project_root is not None:
-        project_config_path = Path(project_root) / ".brr" / "config.env"
-        if project_config_path.exists():
-            config_text = config_text.rstrip("\n") + "\n" + project_config_path.read_text()
     if config_text and f'PROVIDER="' not in config_text:
         config_text = config_text.rstrip("\n") + f'\nPROVIDER="{provider}"\n'
     if config_text:
@@ -393,23 +378,22 @@ def prepare_staging(name, provider="aws", project_root=None):
         if creds.exists():
             (staging / "nebius_credentials.json").write_text(creds.read_text())
 
-    # Copy GitHub SSH key if configured (non-AWS providers use file_mounts)
-    if provider != "aws":
-        from brr.state import read_config as _read_config
-        config = _read_config()
-        github_key = config.get("GITHUB_SSH_KEY", "")
-        if github_key and Path(github_key).exists():
-            (staging / "github_key").write_text(Path(github_key).read_text())
-            (staging / "github_key").chmod(0o600)
+    # Copy GitHub SSH key if configured (delivered to nodes via file_mounts)
+    from brr.state import read_config as _read_config
+    config = _read_config()
+    github_key = config.get("GITHUB_SSH_KEY", "")
+    if github_key and Path(github_key).exists():
+        (staging / "github_key").write_text(Path(github_key).read_text())
+        (staging / "github_key").chmod(0o600)
 
     return staging
 
 
-def inject_brr_infra(config, staging, repo_root=None):
+def inject_brr_infra(config, staging, git_info=None):
     """Inject file_mounts, initialization_commands, and setup_commands.
 
     Merges with any existing values from the template.
-    If repo_root is provided, also syncs the project repo to ~/code/{name}/.
+    If git_info is provided, sets up git clone of the project repo on the cluster.
     """
     # initialization_commands: ensure pip exists before Ray's internal setup
     config.setdefault("initialization_commands", [])
@@ -417,15 +401,16 @@ def inject_brr_infra(config, staging, repo_root=None):
         0, "export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a && sudo -E apt-get update -y && sudo -E apt-get install -y python3-pip"
     )
 
-    # file_mounts: staging dir -> ~/brr/ on remote
+    # file_mounts: staging dir -> /tmp/brr/ on remote.  /tmp is always
+    # user-writable so Ray's internal mkdir (no sudo) works fine.
     config.setdefault("file_mounts", {})
-    config["file_mounts"]["/home/ubuntu/brr/"] = str(staging) + "/"
+    config["file_mounts"]["/tmp/brr/"] = str(staging) + "/"
 
     # setup_commands: prepend our setup scripts (global, then project)
     config.setdefault("setup_commands", [])
-    config["setup_commands"].insert(0, "bash ~/brr/setup.sh")
+    config["setup_commands"].insert(0, "bash /tmp/brr/setup.sh")
     if (staging / "project-setup.sh").exists():
-        config["setup_commands"].insert(1, "bash ~/brr/project-setup.sh")
+        config["setup_commands"].insert(1, "bash /tmp/brr/project-setup.sh")
 
     # Ray expects these keys to exist (built-in providers fill them via
     # fillout_defaults, but external providers don't get that treatment)
@@ -446,59 +431,15 @@ def inject_brr_infra(config, staging, repo_root=None):
                     nc = nt.get("node_config", {})
                     nc.setdefault("ssh_public_key", pub_key_content)
 
-    # Project repo sync: mount repo to a staging path, then copy to ~/code/
-    # after setup.sh has created the shared storage symlink.
-    if repo_root is not None:
-        repo_root = Path(repo_root)
-        config["file_mounts"]["/home/ubuntu/_project/"] = str(repo_root) + "/"
-
-        excludes = config.setdefault("rsync_exclude", [])
-        for pattern in [".git", "node_modules", "__pycache__", ".venv", "*.pyc", ".brr"]:
-            if pattern not in excludes:
-                excludes.append(pattern)
-
-        repo_name = repo_root.name
-        config["setup_commands"].append(
-            f'if [ -d "$HOME/_project" ] && [ -d "$HOME/code" ]; then '
-            f'mkdir -p "$HOME/code/{repo_name}" && '
-            f'cp -a "$HOME/_project/." "$HOME/code/{repo_name}/"; fi && '
-            f'rm -rf "$HOME/_project"'
-        )
+    # Project repo sync: write git metadata to staging, clone via setup_command.
+    if git_info is not None:
+        import json
+        (staging / "repo_info.json").write_text(json.dumps(git_info))
+        config["setup_commands"].append("bash /tmp/brr/sync-repo.sh")
 
     return config
 
 
-def rewrite_ray_commands_for_uv(config, repo_root):
-    """Rewrite ray start commands for uv-managed projects with a brr dep group.
-
-    Replaces venv activation with `uv run --group brr` so the cluster uses
-    project-locked Ray/Python versions.  No-op if the project has no brr group.
-    """
-    if repo_root is None:
-        return config
-
-    repo_root = Path(repo_root)
-    pyproject_path = repo_root / "pyproject.toml"
-    if not pyproject_path.exists():
-        return config
-
-    import tomllib
-    with open(pyproject_path, "rb") as f:
-        data = tomllib.load(f)
-    if "brr" not in data.get("dependency-groups", {}):
-        return config
-
-    repo_name = repo_root.name
-    project_dir = f"$HOME/code/{repo_name}"
-    for key in ("head_start_ray_commands", "worker_start_ray_commands"):
-        if key in config:
-            config[key] = [
-                cmd.replace("source $HOME/.venv/bin/activate && ", f"cd {project_dir} && ")
-                   .replace("ray ", "uv run --group brr ray ")
-                for cmd in config[key]
-            ]
-
-    return config
 
 
 def write_yaml(config, output_path):

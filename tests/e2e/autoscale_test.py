@@ -4,7 +4,7 @@
 Usage:
     brr up nebius:cpu max_workers=2 -y
     scp tests/e2e/autoscale_test.py brr-nebius-cpu:~/
-    brr attach nebius:cpu -- bash -c "source ~/.venv/bin/activate && python ~/autoscale_test.py"
+    brr attach nebius:cpu -- bash -c "source /tmp/brr/venv/bin/activate && python ~/autoscale_test.py"
 
 Monitor autoscaler in a separate terminal:
     brr attach nebius:cpu -- tail -f /tmp/ray/session_latest/logs/monitor.log

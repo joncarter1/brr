@@ -1,6 +1,6 @@
 [project]
 name = "brr-cli"
-version = "0.2.0"
+version = "0.3.0"
 description = "Research infrastructure management tooling."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,4 +42,7 @@ build-backend = "hatchling.build"
 brr = [
     "brr-cli[aws]",
     "ray[default]>=2.53.0",
+]
+dev = [
+    "pytest>=9.0.2",
 ]

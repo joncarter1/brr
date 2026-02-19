@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- Git-based project sync — `brr up` in a git repo clones the project on cluster nodes and keeps it in sync.
+- Persistent home directory — `$HOME` is bind-mounted from EFS/virtiofs so all state survives instance replacement.
+- `brr clean` works across all configured providers (was AWS-only).
+- `brr nuke` redesigned with parallel multi-region cleanup and confirmation prompts.
+
+### Changed
+
+- GitHub SSH keys no longer use AWS Secrets Manager. Config key `GITHUB_SSH_SECRET` replaced by `GITHUB_SSH_KEY` — re-run `brr configure aws` to update.
+- Removed project-level `.brr/config.env` — all config is now global (`~/.brr/config.env` only).
+- Removed `DEFAULT_PROVIDER` and `DEFAULT_TEMPLATE` config keys (use explicit `provider:name` prefix instead).
+
+### Fixed
+
+- uv lock file failures on EFS — caches and Python installs routed to `/tmp`.
+
 ## 0.2.0
 
 ### Added
@@ -13,7 +32,6 @@
 
 - Nebius nodes are now **deleted** on scale-down by default (was stop). Stopped instances still incur disk charges. Enable `cache_stopped_nodes: true` to keep the old behavior.
 - Nebius default templates now use 50 GB boot disks (down from 100-500 GB).
-- Nebius default templates now use `network-ssd-nonreplicated` (25% cheaper than `network-ssd`).
 - SSH aliases now consistently use `brr-{provider}-{name}` (e.g. `brr-aws-h100`).
 - `brr nuke --provider nebius` no longer removes AWS SSH config entries (and vice versa).
 - `brr --version` now reads from package metadata instead of a hardcoded string.

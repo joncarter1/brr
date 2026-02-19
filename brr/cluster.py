@@ -12,8 +12,8 @@ from rich.table import Table
 
 from brr.state import (
     read_config, read_merged_config, find_project_root, find_project_providers,
-    resolve_project_provider, read_project_config, parse_provider, cluster_ssh_alias,
-    check_provider_configured,
+    resolve_project_provider, parse_provider, cluster_ssh_alias,
+    check_provider_configured, is_provider_configured,
 )
 from brr.templates import (
     resolve_template,
@@ -21,10 +21,8 @@ from brr.templates import (
     render,
     apply_overrides,
     apply_baked_images,
-    global_setup_hash,
     prepare_staging,
     inject_brr_infra,
-    rewrite_ray_commands_for_uv,
     write_yaml,
     output_path_for,
     list_templates,
@@ -37,6 +35,89 @@ from brr.templates import (
 )
 
 console = Console()
+
+
+def _get_git_info(project_root):
+    """Get git repo metadata for project sync.
+
+    Returns dict with remote_url, branch, commit, repo_name, project_path
+    or None if not a git repo or has no remote.
+    """
+    project_root = Path(project_root)
+
+    def _git(*args):
+        return subprocess.run(
+            ["git"] + list(args),
+            cwd=project_root, capture_output=True, text=True,
+        )
+
+    # Must be a git repo
+    if _git("rev-parse", "--git-dir").returncode != 0:
+        return None
+
+    # Must have a remote
+    r = _git("remote", "get-url", "origin")
+    if r.returncode != 0:
+        return None
+    remote_url = r.stdout.strip()
+
+    r = _git("rev-parse", "--abbrev-ref", "HEAD")
+    if r.returncode != 0:
+        return None
+    branch = r.stdout.strip()
+
+    r = _git("rev-parse", "HEAD")
+    if r.returncode != 0:
+        return None
+    commit = r.stdout.strip()
+
+    return {
+        "remote_url": remote_url,
+        "branch": branch,
+        "commit": commit,
+        "repo_name": project_root.name,
+        "project_path": str(project_root),
+    }
+
+
+def _validate_git_for_sync(project_root, git_info, config):
+    """Validate git state before first deploy. Raises click.UsageError on failure."""
+    project_root = Path(project_root)
+
+    def _git(*args):
+        return subprocess.run(
+            ["git"] + list(args),
+            cwd=project_root, capture_output=True, text=True,
+        )
+
+    errors = []
+
+    # Working tree must be clean
+    r = _git("status", "--porcelain")
+    if r.stdout.strip():
+        errors.append("Working tree has uncommitted changes. Commit or stash before deploying.")
+
+    # Remote URL must be SSH
+    url = git_info["remote_url"]
+    if not (url.startswith("git@") or url.startswith("ssh://")):
+        errors.append(
+            f"Remote URL is not SSH: {url}\n"
+            "  Set an SSH remote: git remote set-url origin git@github.com:user/repo.git"
+        )
+
+    # All changes must be pushed
+    branch = git_info["branch"]
+    r = _git("log", f"origin/{branch}..HEAD", "--oneline")
+    if r.returncode == 0 and r.stdout.strip():
+        count = len(r.stdout.strip().splitlines())
+        errors.append(f"{count} commit(s) not pushed to origin/{branch}. Push before deploying.")
+
+    # GitHub SSH keys must be configured
+    if not config.get("GITHUB_SSH_KEY"):
+        errors.append("GITHUB_SSH_KEY not configured. Run `brr configure` to set up GitHub SSH access.")
+
+    if errors:
+        raise click.UsageError("Git pre-flight checks failed:\n  " + "\n  ".join(errors))
 
 
 def _resolve_provider(name):
@@ -52,8 +133,7 @@ def _resolve_provider(name):
     if not explicit:
         project_root = find_project_root()
         if project_root is not None:
-            project_config = read_project_config(project_root)
-            inferred = resolve_project_provider(project_root, project_config)
+            inferred = resolve_project_provider(project_root)
             if inferred:
                 provider = inferred
     return provider, parsed_name, explicit
@@ -140,12 +220,12 @@ def _project_cluster_map(project_root):
 
 
 def _staging_project_map():
-    """Scan rendered YAMLs in staging to map cluster_name → project_path.
+    """Scan staging dirs to map cluster_name → project_path.
 
-    Reads file_mounts from each rendered YAML — if /home/ubuntu/_project/
-    is mounted, the source path is the local project root.
+    Reads repo_info.json from each staging directory to find the local
+    project path associated with each cluster.
     """
-    import re
+    import json
     from brr.state import STATE_DIR
 
     mapping = {}  # cluster_name → project_path_str
@@ -153,73 +233,37 @@ def _staging_project_map():
     if not staging.is_dir():
         return mapping
 
-    for yaml_file in staging.glob("**/*.yaml"):
-        cluster_name = None
-        project_path = None
-        for line in yaml_file.read_text().splitlines():
-            if cluster_name is None:
-                m = re.match(r'^cluster_name:\s*(\S+)', line)
-                if m:
-                    cluster_name = m.group(1)
-            if project_path is None:
-                m = re.match(r'\s+/home/ubuntu/_project/:\s*(.+?)/?$', line)
-                if m:
-                    project_path = m.group(1)
-            if cluster_name and project_path:
-                break
-        if cluster_name and project_path:
-            mapping[cluster_name] = project_path
+    for repo_info in staging.glob("**/repo_info.json"):
+        try:
+            info = json.loads(repo_info.read_text())
+            project_path = info.get("project_path", "")
+            if project_path:
+                cluster_name = repo_info.parent.name
+                mapping[cluster_name] = project_path
+        except (json.JSONDecodeError, KeyError):
+            continue
     return mapping
-
-
-def _sync_ssh_config_aws(cluster_name, config, short_name=None):
-    """Query EC2 for the cluster head IP and update local SSH config."""
-    from brr.aws.nodes import query_ray_clusters, update_ssh_config
-
-    region = config.get("AWS_REGION", "us-east-1")
-    clusters = query_ray_clusters(region)
-    match = next(
-        (c for c in clusters if c["cluster_name"] == cluster_name and c["state"] == "running"),
-        None,
-    )
-    if match and match["head_ip"] != "-":
-        ssh_alias = cluster_ssh_alias("aws", cluster_name)
-        update_ssh_config(ssh_alias, match["head_ip"], config.get("AWS_SSH_KEY", ""))
-        attach_name = short_name or cluster_name
-        console.print(f"Updated local SSH config: [green]{ssh_alias}[/green]")
-        console.print(f"  Connect with: [bold]brr attach {attach_name}[/bold]")
-        console.print(f"  VS Code:      [bold]brr vscode {attach_name}[/bold]")
-
-
-def _sync_ssh_config_nebius(cluster_name, config, short_name=None):
-    """Query Nebius for the cluster head IP and update local SSH config."""
-    from brr.aws.nodes import update_ssh_config
-    from brr.nebius.nodes import query_head_ip
-
-    project_id = config.get("NEBIUS_PROJECT_ID", "")
-    if not project_id:
-        return
-    head_ip = query_head_ip(project_id, cluster_name)
-    if head_ip:
-        ssh_alias = cluster_ssh_alias("nebius", cluster_name)
-        update_ssh_config(ssh_alias, head_ip, config.get("NEBIUS_SSH_KEY", ""))
-        attach_name = short_name or f"nebius:{cluster_name}"
-        console.print(f"Updated local SSH config: [green]{ssh_alias}[/green]")
-        console.print(f"  Connect with: [bold]brr attach {attach_name}[/bold]")
-        console.print(f"  VS Code:      [bold]brr vscode {attach_name}[/bold]")
-    else:
-        console.print(f"[yellow]Warning: could not find head IP for Nebius cluster '{cluster_name}'[/yellow]")
 
 
 def _sync_ssh_config(provider, cluster_name, short_name=None):
     """Query the cloud for the cluster head IP and update local SSH config."""
+    from brr.providers import get_provider
+    from brr.ssh import update_ssh_config
+
     config = read_config()
     if not config:
         return
-    if provider == "nebius":
-        _sync_ssh_config_nebius(cluster_name, config, short_name=short_name)
+    prov = get_provider(provider)
+    head_ip = prov.find_head_ip(config, cluster_name)
+    if head_ip:
+        ssh_alias = cluster_ssh_alias(provider, cluster_name)
+        update_ssh_config(ssh_alias, head_ip, prov.ssh_key(config))
+        attach_name = short_name or cluster_name
+        console.print(f"Updated local SSH config: [green]{ssh_alias}[/green]")
+        console.print(f"  Connect with: [bold]brr attach {attach_name}[/bold]")
+        console.print(f"  VS Code:      [bold]brr vscode {attach_name}[/bold]")
     else:
-        _sync_ssh_config_aws(cluster_name, config, short_name=short_name)
+        console.print(f"[yellow]Warning: could not find head IP for cluster '{cluster_name}'[/yellow]")
 
 
 @click.command()
@@ -259,9 +303,8 @@ def up(template, overrides, no_config_cache, yes, dry_run):
                 "No TEMPLATE given and no .brr/ project found.\n"
                 "Run `brr init` to set up a project, or specify a template: brr up <template>"
             )
-        project_config = read_project_config(project_root)
-        provider = resolve_project_provider(project_root, project_config)
-        tpl_name = resolve_default_template(project_root, project_config, provider)
+        provider = resolve_project_provider(project_root)
+        tpl_name = resolve_default_template(project_root, provider=provider)
         console.print(f"Project: [bold]{project_root.name}[/bold]")
     else:
         provider, tpl_name, explicit = _resolve_provider(template)
@@ -297,7 +340,6 @@ def up(template, overrides, no_config_cache, yes, dry_run):
             raise SystemExit(1)
 
     check_required(rendered, template_aliases)
-    rewrite_ray_commands_for_uv(rendered, project_root)
 
     if dry_run:
         console.print()
@@ -306,47 +348,39 @@ def up(template, overrides, no_config_cache, yes, dry_run):
 
     cluster_name = rendered.get("cluster_name", tpl_name)
 
-    # If re-deploying a project, ask whether to sync local files to the cluster.
+    # First deploy: git clone the project. Re-deploy: infrastructure only.
     sync_project = True
     if project_root and not dry_run:
         out_path = output_path_for(cluster_name, provider)
         if out_path.exists():
-            sync_project = yes or click.confirm(
-                "Project may already exist on cluster. Sync local files?",
-                default=True,
-            )
+            sync_project = False
+
+    git_info = None
+    if project_root and sync_project:
+        git_info = _get_git_info(project_root)
+        if git_info is not None:
+            _validate_git_for_sync(project_root, git_info, config)
 
     staging = prepare_staging(cluster_name, provider, project_root=project_root)
-    inject_brr_infra(rendered, staging, repo_root=project_root if sync_project else None)
+    inject_brr_infra(rendered, staging, git_info=git_info)
 
     # Apply baked images if available (works for both AWS and Nebius)
     apply_baked_images(rendered, config)
 
-    if provider == "aws":
-        bake_hash = config.get("BAKE_SETUP_HASH", "")
-        has_baked = config.get("AMI_UBUNTU_BAKED") or config.get("AMI_DL_BAKED")
-        if has_baked and bake_hash and bake_hash != global_setup_hash():
-            console.print(
-                "[yellow]Warning: ~/.brr/setup.sh has changed since last bake. "
-                "Run `brr bake aws` to rebuild.[/yellow]"
-            )
-        elif not has_baked:
-            console.print("[dim]Tip: Run `brr bake aws` to pre-bake setup into AMIs for faster boot.[/dim]")
-    elif provider == "nebius":
-        bake_hash = config.get("NEBIUS_BAKE_SETUP_HASH", "")
-        has_baked = config.get("NEBIUS_IMAGE_CPU_BAKED") or config.get("NEBIUS_IMAGE_GPU_BAKED")
-        if has_baked and bake_hash and bake_hash != global_setup_hash():
-            console.print(
-                "[yellow]Warning: ~/.brr/setup.sh has changed since last bake. "
-                "Run `brr bake nebius` to rebuild.[/yellow]"
-            )
-        elif not has_baked:
-            console.print("[dim]Tip: Run `brr bake nebius` to pre-bake setup into images for faster boot.[/dim]")
+    from brr.providers import get_provider
+    prov = get_provider(provider)
+    bake_hint = prov.bake_hint(config)
+    if bake_hint:
+        style = "[yellow]" if bake_hint.startswith("Warning") else "[dim]"
+        end_style = "[/yellow]" if bake_hint.startswith("Warning") else "[/dim]"
+        console.print(f"{style}{bake_hint}{end_style}")
 
-    if project_root and sync_project:
-        console.print(f"Repo sync: [green]{project_root.name}[/green] → ~/code/{project_root.name}/")
+    if project_root and git_info:
+        console.print(f"Repo sync: [green]git clone {git_info['repo_name']}[/green] → ~/code/{git_info['repo_name']}/")
+    elif project_root and sync_project:
+        console.print(f"Repo sync: [yellow]skipped (not a git repo with remote)[/yellow]")
     elif project_root:
-        console.print(f"Repo sync: [dim]skipped[/dim]")
+        console.print(f"Repo sync: [dim]skipped (re-deploy)[/dim]")
 
     out = output_path_for(cluster_name, provider)
     write_yaml(rendered, out)
@@ -365,31 +399,7 @@ def up(template, overrides, no_config_cache, yes, dry_run):
 
     # Post-ray: sync SSH config even if ray up had warnings (non-zero exit)
     try:
-        if provider == "aws":
-            from brr.aws.nodes import ensure_secretsmanager_iam, query_ray_clusters, update_ssh_config
-
-            if config.get("GITHUB_SSH_SECRET"):
-                ensure_secretsmanager_iam(config.get("AWS_REGION", "us-east-1"))
-
-            region = config.get("AWS_REGION", "us-east-1")
-            clusters = query_ray_clusters(region)
-            match = next(
-                (c for c in clusters if c["cluster_name"] == cluster_name and c["state"] == "running"),
-                None,
-            )
-            if match and match["head_ip"] != "-":
-                ssh_alias = cluster_ssh_alias("aws", cluster_name)
-                update_ssh_config(
-                    ssh_alias,
-                    match["head_ip"],
-                    config.get("AWS_SSH_KEY", ""),
-                )
-                console.print(f"Updated local SSH config: [green]{ssh_alias}[/green]")
-                attach_name = tpl_name if project_root else cluster_name
-                console.print(f"  Connect with: [bold]brr attach {attach_name}[/bold]")
-                console.print(f"  VS Code:      [bold]brr vscode {attach_name}[/bold]")
-        else:
-            _sync_ssh_config(provider, cluster_name, short_name=tpl_name if project_root else None)
+        _sync_ssh_config(provider, cluster_name, short_name=tpl_name if project_root else None)
     except Exception as e:
         console.print(f"[yellow]Warning: SSH config sync failed: {e}[/yellow]")
 
@@ -413,7 +423,8 @@ def down(template, yes, delete):
     """
     import shutil
     from pathlib import Path
-    from brr.aws.nodes import remove_ssh_config
+    from brr.providers import get_provider
+    from brr.ssh import remove_ssh_config
     from brr.state import staging_dir_for, rendered_yaml_for
 
     provider, tpl_name, explicit = _resolve_provider(template)
@@ -447,22 +458,12 @@ def down(template, yes, delete):
 
     # Terminate any remaining cloud instances
     config = read_config()
+    prov = get_provider(provider)
 
-    if provider == "nebius":
-        project_id = config.get("NEBIUS_PROJECT_ID", "")
-        if project_id:
-            from brr.nebius.nodes import terminate_cluster_instances
-            with console.status(f"[bold green]Terminating Nebius instances for '{cluster_name}'..."):
-                count = terminate_cluster_instances(project_id, cluster_name)
-            if count:
-                console.print(f"[green]Terminated {count} Nebius instance(s).[/green]")
-    else:
-        region = config.get("AWS_REGION", "us-east-1")
-        from brr.aws.nodes import terminate_cluster_instances
-        with console.status(f"[bold green]Terminating AWS instances for '{cluster_name}'..."):
-            count = terminate_cluster_instances(region, cluster_name)
-        if count:
-            console.print(f"[green]Terminated {count} AWS instance(s).[/green]")
+    with console.status(f"[bold green]Terminating instances for '{cluster_name}'..."):
+        count = prov.terminate_cluster(config, cluster_name)
+    if count:
+        console.print(f"[green]Terminated {count} instance(s).[/green]")
 
     # Remove local staging files
     staging = staging_dir_for(cluster_name, provider)
@@ -494,13 +495,25 @@ def attach(cluster, command):
     cluster_name = _resolve_cluster_name(name, provider, project_root)
     host = cluster_ssh_alias(provider, cluster_name)
 
+    # If launched from a project, cd into ~/code/{repo} on the remote
+    cd_prefix = ""
+    if project_root:
+        repo_name = project_root.name
+        cd_prefix = f"cd ~/code/{repo_name} 2>/dev/null; "
+
     if command:
         remote_cmd = " ".join(shlex.quote(c) for c in command)
-        console.print(f"[dim]$ ssh -t {host} bash -lc {remote_cmd}[/dim]")
-        result = subprocess.run(["ssh", "-t", host, f"bash -lc {shlex.quote(remote_cmd)}"])
+        full_cmd = f"bash -lc {shlex.quote(cd_prefix + remote_cmd)}"
+        console.print(f"[dim]$ ssh -t {host} {full_cmd}[/dim]")
+        result = subprocess.run(["ssh", "-t", host, full_cmd])
     else:
-        console.print(f"[dim]$ ssh {host}[/dim]")
-        result = subprocess.run(["ssh", host])
+        if cd_prefix:
+            full_cmd = f"bash -lc {shlex.quote(cd_prefix + 'exec bash')}"
+            console.print(f"[dim]$ ssh -t {host} (~/code/{project_root.name}/)[/dim]")  # type: ignore[union-attr]
+            result = subprocess.run(["ssh", "-t", host, full_cmd])
+        else:
+            console.print(f"[dim]$ ssh {host}[/dim]")
+            result = subprocess.run(["ssh", host])
     sys.exit(result.returncode)
 
 
@@ -517,115 +530,59 @@ def clean(template, yes):
     If TEMPLATE is given, clean only that cluster. Otherwise clean all stopped
     Ray instances.
     """
+    from brr.providers import get_provider
+
     config = read_config()
 
     if template:
         provider, tpl_name, explicit = _resolve_provider(template)
         project_root = _project_root_for(provider, tpl_name, explicit)
         cluster_name = _resolve_cluster_name(tpl_name, provider, project_root)
+        providers_to_clean = [(provider, cluster_name)]
     else:
-        provider, cluster_name = "aws", None
+        # Clean all configured providers
+        providers_to_clean = [
+            (p, None) for p in ("aws", "nebius")
+            if is_provider_configured(p, config)
+        ]
+        if not providers_to_clean:
+            console.print("[dim]No providers configured.[/dim]")
+            return
 
-    check_provider_configured(provider, config)
+    all_stopped = []
+    for provider, cluster_name in providers_to_clean:
+        prov = get_provider(provider)
+        with console.status(f"[bold green]Querying stopped {provider} instances..."):
+            stopped = prov.query_stopped(config, cluster_name)
+        all_stopped.extend([(provider, inst) for inst in stopped])
 
-    if provider == "nebius":
-        _clean_nebius(config, cluster_name, yes)
-    else:
-        _clean_aws(config, cluster_name, yes)
-
-
-def _clean_nebius(config, cluster_name, yes):
-    from brr.nebius.nodes import query_stopped_instances, terminate_instances
-
-    project_id = config.get("NEBIUS_PROJECT_ID", "")
-    if not project_id:
-        console.print("[red]NEBIUS_PROJECT_ID not configured. Run `brr configure nebius` first.[/red]")
-        return
-
-    with console.status("[bold green]Querying stopped Nebius instances..."):
-        stopped = query_stopped_instances(project_id, cluster_name)
-
-    if not stopped:
-        label = f"cluster '{cluster_name}'" if cluster_name else "any cluster"
-        console.print(f"[dim]No stopped Nebius instances for {label}.[/dim]")
+    if not all_stopped:
+        console.print("[dim]No stopped instances found.[/dim]")
         return
 
     by_cluster = defaultdict(list)
-    for inst in stopped:
-        by_cluster[inst["cluster_name"]].append(inst)
+    for provider, inst in all_stopped:
+        by_cluster[(provider, inst["cluster_name"])].append(inst)
 
-    total = len(stopped)
-    for name, instances in sorted(by_cluster.items()):
-        console.print(f"  [cyan]{name}[/cyan]: {len(instances)} stopped instance(s)")
+    total = len(all_stopped)
+    for (provider, name), instances in sorted(by_cluster.items()):
+        console.print(f"  [cyan]{name}[/cyan] ({provider}): {len(instances)} stopped instance(s)")
     console.print(f"\nTotal: [bold]{total}[/bold] instance(s).")
 
     if not yes and not click.confirm("Terminate?", default=True):
         return
 
-    ids = [inst["instance_id"] for inst in stopped]
-    with console.status("[bold green]Terminating instances..."):
-        count = terminate_instances(project_id, ids)
-    console.print(f"[green]Terminated {count} instance(s).[/green]")
+    # Group by provider for termination
+    by_provider = defaultdict(list)
+    for provider, inst in all_stopped:
+        by_provider[provider].append(inst["instance_id"])
 
-
-def _clean_aws(config, cluster_name, yes):
-    import boto3
-
-    region = config.get("AWS_REGION", "us-east-1")
-
-    if cluster_name:
-        ec2 = boto3.client("ec2", region_name=region)
-        paginator = ec2.get_paginator("describe_instances")
-        pages = paginator.paginate(
-            Filters=[
-                {"Name": "tag:ray-cluster-name", "Values": [cluster_name]},
-                {"Name": "instance-state-name", "Values": ["stopped"]},
-            ]
-        )
-        ids = [
-            inst["InstanceId"]
-            for page in pages
-            for res in page["Reservations"]
-            for inst in res["Instances"]
-        ]
-        if not ids:
-            console.print(f"[dim]No stopped instances for cluster '{cluster_name}' in {region}.[/dim]")
-            return
-        console.print(f"Found [bold]{len(ids)}[/bold] stopped instance(s) for cluster [cyan]{cluster_name}[/cyan].")
-        if not yes and not click.confirm("Terminate?", default=True):
-            return
-        ec2.terminate_instances(InstanceIds=ids)
-        console.print(f"[green]Terminated {len(ids)} instance(s).[/green]")
-    else:
-        ec2 = boto3.client("ec2", region_name=region)
-        paginator = ec2.get_paginator("describe_instances")
-        pages = paginator.paginate(
-            Filters=[
-                {"Name": "tag-key", "Values": ["ray-cluster-name"]},
-                {"Name": "instance-state-name", "Values": ["stopped"]},
-            ]
-        )
-        by_cluster = defaultdict(list)
-        for page in pages:
-            for res in page["Reservations"]:
-                for inst in res["Instances"]:
-                    tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
-                    name = tags.get("ray-cluster-name", "unknown")
-                    by_cluster[name].append(inst["InstanceId"])
-
-        if not by_cluster:
-            console.print(f"[dim]No stopped Ray instances in {region}.[/dim]")
-            return
-
-        total = sum(len(ids) for ids in by_cluster.values())
-        for name, ids in sorted(by_cluster.items()):
-            console.print(f"  [cyan]{name}[/cyan]: {len(ids)} stopped instance(s)")
-        console.print(f"\nTotal: [bold]{total}[/bold] instance(s).")
-        if not yes and not click.confirm("Terminate all?", default=True):
-            return
-        all_ids = [i for ids in by_cluster.values() for i in ids]
-        ec2.terminate_instances(InstanceIds=all_ids)
-        console.print(f"[green]Terminated {len(all_ids)} instance(s).[/green]")
+    terminated = 0
+    for provider, ids in by_provider.items():
+        prov = get_provider(provider)
+        with console.status(f"[bold green]Terminating {provider} instances..."):
+            terminated += prov.terminate_by_ids(config, ids)
+    console.print(f"[green]Terminated {terminated} instance(s).[/green]")
 
 
 @click.command()
@@ -636,7 +593,8 @@ def vscode(cluster):
     Looks up the head node IP for CLUSTER, updates the SSH config entry,
     and launches VS Code. Use provider:name syntax for non-AWS (e.g. nebius:cpu).
     """
-    from brr.aws.nodes import update_ssh_config
+    from brr.providers import get_provider
+    from brr.ssh import update_ssh_config
 
     config = read_config()
 
@@ -645,41 +603,17 @@ def vscode(cluster):
     project_root = _project_root_for(provider, name, explicit)
     cluster_name = _resolve_cluster_name(name, provider, project_root)
 
-    if provider == "nebius":
-        from brr.nebius.nodes import query_head_ip
+    prov = get_provider(provider)
 
-        project_id = config.get("NEBIUS_PROJECT_ID", "")
-        if not project_id:
-            console.print("[red]NEBIUS_PROJECT_ID not configured. Run `brr configure nebius` first.[/red]")
-            raise SystemExit(1)
+    with console.status(f"[bold green]Looking up cluster '{cluster_name}'..."):
+        head_ip = prov.find_head_ip(config, cluster_name)
 
-        with console.status(f"[bold green]Looking up Nebius cluster '{cluster_name}'..."):
-            head_ip = query_head_ip(project_id, cluster_name)
+    if not head_ip:
+        console.print(f"[red]No running cluster '{cluster_name}' found.[/red]")
+        raise SystemExit(1)
 
-        if not head_ip:
-            console.print(f"[red]No running Nebius cluster '{cluster_name}' found.[/red]")
-            raise SystemExit(1)
-
-        host = cluster_ssh_alias("nebius", cluster_name)
-        update_ssh_config(host, head_ip, config.get("NEBIUS_SSH_KEY", ""))
-    else:
-        from brr.aws.nodes import query_ray_clusters
-
-        region = config.get("AWS_REGION", "us-east-1")
-
-        with console.status(f"[bold green]Looking up cluster '{cluster_name}' in {region}..."):
-            clusters = query_ray_clusters(region)
-
-        match = next(
-            (c for c in clusters if c["cluster_name"] == cluster_name and c["state"] == "running"),
-            None,
-        )
-        if not match or match["head_ip"] == "-":
-            console.print(f"[red]No running cluster '{cluster_name}' found in {region}.[/red]")
-            raise SystemExit(1)
-
-        host = cluster_ssh_alias("aws", cluster_name)
-        update_ssh_config(host, match["head_ip"], config.get("AWS_SSH_KEY", ""))
+    host = cluster_ssh_alias(provider, cluster_name)
+    update_ssh_config(host, head_ip, prov.ssh_key(config))
 
     remote_path = f"/home/ubuntu/code/{project_root.name}" if project_root else "/home/ubuntu/code"
 
@@ -701,6 +635,10 @@ def list_cmd(show_all):
     Inside a project, shows only clusters defined in .brr/ templates.
     Use --all to show every cluster.
     """
+    from brr.providers import get_provider
+    from brr.ssh import get_ray_status
+    from brr.state import is_provider_configured
+
     config = read_config()
 
     project_root = find_project_root()
@@ -709,48 +647,27 @@ def list_cmd(show_all):
     ray_statuses = {}
     any_queried = False
 
-    # Query AWS if configured
-    if config.get("AWS_REGION"):
-        any_queried = True
-        from brr.aws.nodes import query_ray_clusters, get_ray_status
-
-        region = config["AWS_REGION"]
-        ssh_key = config.get("AWS_SSH_KEY", "")
-
-        with console.status(f"[bold green]Querying AWS clusters in {region}..."):
-            aws_clusters = query_ray_clusters(region)
-
-        for c in aws_clusters:
-            all_clusters.append(("aws", c))
-
-        running = [c for c in aws_clusters if c["state"] == "running" and c["head_ip"] != "-"]
-        if running and ssh_key:
-            with console.status("[bold green]Querying Ray node status..."):
-                for c in running:
-                    ray_statuses[("aws", c["cluster_name"])] = get_ray_status(c["head_ip"], ssh_key)
-
-    # Query Nebius if configured
-    if config.get("NEBIUS_PROJECT_ID"):
+    for provider_name in ("aws", "nebius"):
+        if not is_provider_configured(provider_name, config):
+            continue
         any_queried = True
         try:
-            from brr.nebius.nodes import query_clusters
+            prov = get_provider(provider_name)
 
-            nebius_ssh_key = config.get("NEBIUS_SSH_KEY", "")
+            with console.status(f"[bold green]Querying {provider_name} clusters..."):
+                provider_clusters = prov.list_clusters(config)
 
-            with console.status("[bold green]Querying Nebius clusters..."):
-                nebius_clusters = query_clusters(config["NEBIUS_PROJECT_ID"])
+            for c in provider_clusters:
+                all_clusters.append((provider_name, c))
 
-            for c in nebius_clusters:
-                all_clusters.append(("nebius", c))
-
-            running = [c for c in nebius_clusters if c["state"] == "running" and c["head_ip"] != "-"]
-            if running and nebius_ssh_key:
-                from brr.aws.nodes import get_ray_status as _get_ray_status
-                with console.status("[bold green]Querying Nebius Ray status..."):
+            running = [c for c in provider_clusters if c["state"] == "running" and c["head_ip"] != "-"]
+            key = prov.ssh_key(config)
+            if running and key:
+                with console.status(f"[bold green]Querying {provider_name} Ray status..."):
                     for c in running:
-                        ray_statuses[("nebius", c["cluster_name"])] = _get_ray_status(c["head_ip"], nebius_ssh_key)
+                        ray_statuses[(provider_name, c["cluster_name"])] = get_ray_status(c["head_ip"], key)
         except (ImportError, ModuleNotFoundError):
-            console.print("[dim]Nebius configured but SDK not installed (pip install brr\\[nebius])[/dim]")
+            console.print(f"[dim]{provider_name} configured but SDK not installed[/dim]")
 
     # Build project cluster map (always, for display purposes)
     cluster_map = {}  # cluster_name → template_stem

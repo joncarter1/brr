@@ -149,11 +149,11 @@ def find_project_providers(project_root):
     )
 
 
-def resolve_project_provider(project_root, config=None):
+def resolve_project_provider(project_root):
     """Resolve the default provider for a project.
 
     If one provider → returns it.
-    If multiple → uses DEFAULT_PROVIDER from config, or raises click.UsageError.
+    If multiple → raises click.UsageError (user must use prefix).
     If none → returns None.
     """
     providers = find_project_providers(project_root)
@@ -161,28 +161,17 @@ def resolve_project_provider(project_root, config=None):
         return None
     if len(providers) == 1:
         return providers[0]
-    # Multiple providers — check DEFAULT_PROVIDER
-    config = config or {}
-    default = config.get("DEFAULT_PROVIDER", "")
-    if default in providers:
-        return default
     import click
 
     raise click.UsageError(
         f"Multiple providers in .brr/: {', '.join(providers)}. "
-        f"Use prefix (e.g. `brr up aws:dev`) or set DEFAULT_PROVIDER in .brr/config.env."
+        f"Use prefix (e.g. `brr up aws:dev`)."
     )
 
 
-def read_project_config(project_root):
-    """Read .brr/config.env from a project root. Returns dict (empty if no file)."""
-    return read_config(Path(project_root) / ".brr" / "config.env")
-
-
 def read_merged_config(project_root=None):
-    """Read global config, then overlay project config on top.
+    """Read global config (CONFIG_DEFAULTS → ~/.brr/config.env).
 
-    Layers: CONFIG_DEFAULTS → ~/.brr/config.env → .brr/config.env (project).
     If project_root is None, attempts to find it via find_project_root().
     Returns (merged_config, project_root_or_None).
     """
@@ -190,9 +179,6 @@ def read_merged_config(project_root=None):
     config.update(read_config())
     if project_root is None:
         project_root = find_project_root()
-    if project_root is not None:
-        project_config = read_project_config(project_root)
-        config.update(project_config)
     return config, project_root
 
 

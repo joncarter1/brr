@@ -153,27 +153,36 @@ def _project_root_for(provider, tpl_name, explicit):
     return project_root
 
 
-def _find_ray():
-    """Find the ray CLI binary. Checks the current venv first, then PATH."""
+def _ray_cmd(project_root=None):
+    """Return the command prefix for invoking ray.
+
+    If project_root is a uv project (has pyproject.toml + uv.lock), returns
+    ["uv", "run", "--group", "brr", "ray"] so the project-locked ray is used.
+    Otherwise finds the ray binary from the current venv or PATH.
+    """
     from pathlib import Path
+
+    if project_root:
+        pr = Path(project_root)
+        if (pr / "pyproject.toml").exists() and (pr / "uv.lock").exists():
+            return ["uv", "run", "--group", "brr", "ray"]
 
     venv_ray = Path(sys.executable).parent / "ray"
     if venv_ray.is_file():
-        return str(venv_ray)
+        return [str(venv_ray)]
 
     on_path = shutil.which("ray")
     if on_path:
-        return on_path
+        return [on_path]
 
     console.print("[red]Ray is not installed.[/red]")
     console.print("Install it with: [bold]pip install brr[/bold]")
     raise SystemExit(1)
 
 
-def _run_ray(args):
+def _run_ray(args, project_root=None):
     """Run a ray CLI command, passing through stdout/stderr."""
-    ray_bin = _find_ray()
-    cmd = [ray_bin] + args
+    cmd = _ray_cmd(project_root) + args
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
     result = subprocess.run(cmd)
     if result.returncode != 0:
@@ -272,7 +281,9 @@ def _sync_ssh_config(provider, cluster_name, short_name=None):
 @click.option("--no-config-cache", is_flag=True, help="Disable Ray config cache")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompts")
 @click.option("--dry-run", is_flag=True, help="Print rendered config without launching")
-def up(template, overrides, no_config_cache, yes, dry_run):
+@click.option("--no-project", is_flag=True, help="Ignore .brr/ project directory")
+@click.option("--dev-setup", is_flag=True, help="Use package setup.sh instead of ~/.brr/setup.sh")
+def up(template, overrides, no_config_cache, yes, dry_run, no_project, dev_setup):
     """Launch or update a Ray cluster.
 
     TEMPLATE is a built-in with provider prefix (aws:h100, nebius:cpu),
@@ -296,6 +307,8 @@ def up(template, overrides, no_config_cache, yes, dry_run):
 
     # Project auto-discovery
     project_root = find_project_root()
+    if no_project:
+        project_root = None
 
     if template is None:
         if project_root is None:
@@ -361,7 +374,7 @@ def up(template, overrides, no_config_cache, yes, dry_run):
         if git_info is not None:
             _validate_git_for_sync(project_root, git_info, config)
 
-    staging = prepare_staging(cluster_name, provider, project_root=project_root)
+    staging = prepare_staging(cluster_name, provider, project_root=project_root, use_pkg_setup=dev_setup)
     inject_brr_infra(rendered, staging, git_info=git_info)
 
     # Apply baked images if available (works for both AWS and Nebius)
@@ -392,8 +405,7 @@ def up(template, overrides, no_config_cache, yes, dry_run):
     if yes:
         ray_args.append("-y")
 
-    ray_bin = _find_ray()
-    cmd = [ray_bin] + ray_args
+    cmd = _ray_cmd(project_root) + ray_args
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
     ray_result = subprocess.run(cmd)
 
@@ -443,7 +455,7 @@ def down(template, yes, delete):
         ray_args = ["down", yaml_path]
         if yes or delete:
             ray_args.append("-y")
-        _run_ray(ray_args)
+        _run_ray(ray_args, project_root=project_root)
     elif delete:
         console.print(f"[yellow]No rendered YAML at {yaml_path}, skipping ray down.[/yellow]")
     else:
@@ -503,12 +515,12 @@ def attach(cluster, command):
 
     if command:
         remote_cmd = " ".join(shlex.quote(c) for c in command)
-        full_cmd = f"bash -lc {shlex.quote(cd_prefix + remote_cmd)}"
+        full_cmd = f"bash -lic {shlex.quote(cd_prefix + remote_cmd)}"
         console.print(f"[dim]$ ssh -t {host} {full_cmd}[/dim]")
         result = subprocess.run(["ssh", "-t", host, full_cmd])
     else:
         if cd_prefix:
-            full_cmd = f"bash -lc {shlex.quote(cd_prefix + 'exec bash')}"
+            full_cmd = f"bash -lic {shlex.quote(cd_prefix + 'exec bash')}"
             console.print(f"[dim]$ ssh -t {host} (~/code/{project_root.name}/)[/dim]")  # type: ignore[union-attr]
             result = subprocess.run(["ssh", "-t", host, full_cmd])
         else:

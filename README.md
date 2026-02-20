@@ -160,6 +160,7 @@ brr configure tools    # select Claude Code, Codex, and/or Gemini CLI
 Then connect and start coding:
 
 ```sh
+brr up dev
 brr attach dev claude
 ```
 

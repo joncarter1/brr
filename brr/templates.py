@@ -310,16 +310,16 @@ def apply_overrides(config, overrides, template_aliases=None):
     return config
 
 
-def _read_global_setup():
+def _read_global_setup(use_pkg=False):
     """Read the global setup script from ~/.brr/setup.sh, falling back to built-in."""
     global_setup = STATE_DIR / "setup.sh"
-    if global_setup.exists():
+    if not use_pkg and global_setup.exists():
         return global_setup.read_text()
     pkg = files("brr.data")
     return pkg.joinpath("setup.sh").read_text()
 
 
-def prepare_staging(name, provider="aws", project_root=None):
+def prepare_staging(name, provider="aws", project_root=None, use_pkg_setup=False):
     """Create staging directory with support files for a cluster.
 
     Two-layer setup:
@@ -336,7 +336,7 @@ def prepare_staging(name, provider="aws", project_root=None):
     pkg = files("brr.data")
 
     # Layer 1: Global setup — from ~/.brr/setup.sh or built-in
-    (staging / "setup.sh").write_text(_read_global_setup())
+    (staging / "setup.sh").write_text(_read_global_setup(use_pkg=use_pkg_setup))
 
     # Layer 2: Project setup — from .brr/{provider}/setup.sh if in a project
     project_setup_staged = False

@@ -221,6 +221,7 @@ if [ "${INSTALL_CLAUDE_CODE:-}" = "true" ]; then
   fi
 fi
 
+
 if [ "${INSTALL_CODEX:-}" = "true" ]; then
   _ensure_node
   if ! command -v codex >/dev/null 2>&1; then
@@ -278,6 +279,15 @@ fi
 if [ -z "$UV_BIN" ]; then
   UV_BIN="uv"
 fi
+
+# Route uv caches to /tmp so EFS flock issues don't hang uv commands.
+# The wrapper (installed later) also sets these, but we need them NOW
+# for the uv venv/pip commands below.
+export UV_CACHE_DIR="/tmp/uv"
+export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"
+
+# Ensure a managed Python is available in the redirected install dir
+"$UV_BIN" python install
 
 # Create virtual environment at /tmp/brr/venv if absent (instance-local, not in home)
 VENVDIR="/tmp/brr/venv"

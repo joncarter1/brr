@@ -26,18 +26,18 @@ uv tool install brr-cli[aws]
 # Configure (interactive wizard)
 brr configure      # or: brr configure nebius
 
-# Launch an H100
-brr up aws:h100
+# Launch a GPU instance
+brr up aws:l4
 
 # brr up nebius:h100
 
 # Connect
-brr attach aws:h100              # SSH
-brr attach aws:h100 claude       # Claude Code on the cluster
-brr vscode aws:h100              # VS Code remote
+brr attach aws:l4                # SSH
+brr attach aws:l4 claude         # Claude Code on the cluster
+brr vscode aws:l4                # VS Code remote
 ```
 
-Built-in templates use `provider:name` syntax (e.g. `aws:h100`). Inside a [project](#projects), short names like `brr up dev` work automatically.
+Built-in templates use `provider:name` syntax (e.g. `aws:l4`). Inside a [project](#projects), short names like `brr up dev` work automatically.
 
 Supported clouds: [AWS](#aws-setup) · [Nebius](#nebius-setup)
 
@@ -81,7 +81,7 @@ All global config lives in `~/.brr/config.env`.
 | :--- | :--- | :--- | :--- |
 | `aws:cpu` | t3.2xlarge | — | 0-2 |
 | `aws:l4` | gr6.4xlarge | 1x L4 | — |
-| `aws:h100` | p5.4xlarge | 8x H100 | — |
+| `aws:h100` | p5.4xlarge | 1x H100 | — |
 | `aws:cpu-l4` | t3.2xlarge + g6.4xlarge | 1x L4 | 0-4 |
 | `nebius:cpu` | 8vcpu-32gb | — | 0-2 |
 | `nebius:h100` | 1gpu-16vcpu-200gb | 1x H100 | — |
@@ -93,7 +93,7 @@ Override template values inline:
 
 ```sh
 brr up aws:cpu instance_type=t3.xlarge max_workers=4
-brr up aws:h100 spot=true
+brr up aws:l4 spot=true
 brr up dev region=us-west-2
 ```
 
@@ -114,7 +114,7 @@ brr templates show dev
 Use the provider prefix for built-in templates:
 
 ```sh
-brr up aws:h100
+brr up aws:l4
 brr up nebius:h100
 brr attach nebius:h100
 brr down nebius:h100
@@ -217,7 +217,7 @@ AWS nodes are cached (stopped) by default.
 
 | Command | Description |
 | :--- | :--- |
-| `brr up TEMPLATE [OVERRIDES...]` | Launch or update a cluster (`aws:h100`, `dev`, or `path.yaml`) |
+| `brr up TEMPLATE [OVERRIDES...]` | Launch or update a cluster (`aws:l4`, `dev`, or `path.yaml`) |
 | `brr up TEMPLATE --dry-run` | Preview rendered config without launching |
 | `brr down TEMPLATE` | Stop a cluster (instances preserved for fast restart) |
 | `brr down TEMPLATE --delete` | Terminate all instances and remove staging files |

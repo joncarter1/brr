@@ -15,9 +15,18 @@
 - Removed project-level `.brr/config.env` — all config is now global (`~/.brr/config.env` only).
 - Removed `DEFAULT_PROVIDER` and `DEFAULT_TEMPLATE` config keys (use explicit `provider:name` prefix instead).
 
+### Added
+
+- `--no-project` flag for `brr up` to skip `.brr/` project auto-discovery.
+- `--dev-setup` flag for `brr up` to use the package's built-in `setup.sh` instead of `~/.brr/setup.sh`.
+
 ### Fixed
 
 - uv lock file failures on EFS — caches and Python installs routed to `/tmp`.
+- `brr up` now detects uv-managed projects and runs Ray via `uv run --group brr ray` automatically.
+- Broken `brrray` group name in project templates — was concatenating `brr` and `ray` without a space.
+- `brr attach` now opens an interactive login shell (`bash -lic`) so `.bashrc` aliases work.
+- `sync-repo.sh` runs `uv sync --group brr` after syncing so Ray commands are immediately available.
 
 ## 0.2.0
 

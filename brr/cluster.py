@@ -354,11 +354,6 @@ def up(template, overrides, no_config_cache, yes, dry_run, no_project, dev_setup
 
     check_required(rendered, template_aliases)
 
-    if dry_run:
-        console.print()
-        console.print(yaml.dump(rendered, default_flow_style=False, sort_keys=False), end="", highlight=False)
-        return
-
     cluster_name = rendered.get("cluster_name", tpl_name)
 
     # First deploy: git clone the project. Re-deploy: infrastructure only.
@@ -379,6 +374,11 @@ def up(template, overrides, no_config_cache, yes, dry_run, no_project, dev_setup
 
     # Apply baked images if available (works for both AWS and Nebius)
     apply_baked_images(rendered, config)
+
+    if dry_run:
+        console.print()
+        console.print(yaml.dump(rendered, default_flow_style=False, sort_keys=False), end="", highlight=False)
+        return
 
     from brr.providers import get_provider
     prov = get_provider(provider)

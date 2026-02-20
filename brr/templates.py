@@ -435,7 +435,7 @@ def inject_brr_infra(config, staging, git_info=None):
     if git_info is not None:
         import json
         (staging / "repo_info.json").write_text(json.dumps(git_info))
-        config["setup_commands"].append("bash /tmp/brr/sync-repo.sh")
+        config["head_setup_commands"].append("bash /tmp/brr/sync-repo.sh")
 
     return config
 

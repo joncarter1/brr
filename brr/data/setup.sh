@@ -286,7 +286,7 @@ fi
 export UV_CACHE_DIR="/tmp/uv"
 export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"
 
-# Pre-install Python versions (avoids hangs later)
+# Pre-install Python versions (avoids hangs later). TODO: Identify root cause of hanging.
 "$UV_BIN" python install 3.10 3.11 3.12 3.13
 
 # Create virtual environment at /tmp/brr/venv if absent (instance-local, not in home)

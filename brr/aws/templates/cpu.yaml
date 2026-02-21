@@ -1,3 +1,11 @@
+# brr AWS template — CPU-only cluster (no GPUs)
+# Based on Ray cluster YAML: https://docs.ray.io/en/latest/cluster/vms/references/ray-cluster-configuration.html
+#
+# {{VAR}} placeholders are filled from ~/.brr/config.env (set by `brr configure`).
+# brr auto-injects setup.sh, file_mounts, and project setup into the final YAML.
+# Add setup_commands to run your own commands after brr setup completes.
+# Override fields via CLI: brr up cpu instance_type=t3.xlarge max_workers=4
+
 cluster_name: cpu
 max_workers: 0
 

@@ -18,25 +18,19 @@ REPO_NAME=$(python3 -c "import json; print(json.load(open('$REPO_INFO'))['repo_n
 PROJECT_DIR="$HOME/code/$REPO_NAME"
 
 if [ -d "$PROJECT_DIR/.git" ]; then
-    # Already cloned (shared storage or worker joining existing cluster)
-    echo "[sync-repo] $PROJECT_DIR already exists, fetching latest"
-    cd "$PROJECT_DIR"
-    git fetch origin
-    git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
-    git reset --hard "$COMMIT"
-else
-    # First deploy — clone
-    echo "[sync-repo] Cloning $REMOTE_URL ($BRANCH) → $PROJECT_DIR"
-    mkdir -p "$HOME/code"
-    git clone --branch "$BRANCH" "$REMOTE_URL" "$PROJECT_DIR"
-    cd "$PROJECT_DIR"
-    git reset --hard "$COMMIT"
+    echo "[sync-repo] $PROJECT_DIR already exists, skipping"
+    exit 0
 fi
+
+echo "[sync-repo] Cloning $REMOTE_URL ($BRANCH) → $PROJECT_DIR"
+mkdir -p "$HOME/code"
+git clone --branch "$BRANCH" "$REMOTE_URL" "$PROJECT_DIR"
+cd "$PROJECT_DIR"
+git reset --hard "$COMMIT"
 
 # Sync uv project environment if applicable
 if [ -f "$PROJECT_DIR/pyproject.toml" ] && [ -f "$PROJECT_DIR/uv.lock" ]; then
     echo "[sync-repo] Syncing uv project environment (brr group)"
-    cd "$PROJECT_DIR"
     uv sync --group brr
 fi
 

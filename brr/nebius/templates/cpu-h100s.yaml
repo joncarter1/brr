@@ -1,3 +1,16 @@
+# brr Nebius template — CPU head + 8xH100 GPU workers
+# Based on Ray cluster YAML: https://docs.ray.io/en/latest/cluster/vms/references/ray-cluster-configuration.html
+#
+# {{VAR}} placeholders are filled from ~/.brr/config.env (set by `brr configure`).
+# brr auto-injects setup.sh, file_mounts, and project setup into the final YAML.
+# Add setup_commands to run your own commands after brr setup completes.
+#
+# Nebius node_config fields:
+#   platform_id  — compute platform (cpu-e2, gpu-h100-sxm)
+#   preset_id    — vCPU/RAM/GPU combo (e.g. 8vcpu-32gb, 1gpu-16vcpu-200gb)
+#   image_family — OS image (ubuntu22.04-driverless, ubuntu22.04-cuda12)
+#   resources    — required: tell Ray what the node has (CPU: N, GPU: N)
+
 cluster_name: cpu-h100s
 max_workers: 4
 idle_timeout_minutes: 5

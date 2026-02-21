@@ -15,12 +15,12 @@ PROVIDERS = ["aws", "nebius"]
 # Maps project template name → built-in template to copy from, per provider.
 _TEMPLATE_MAP = {
     "aws": {
-        "dev": "l4",         # single L4 GPU
-        "cluster": "cpu-l4", # CPU head + L4 GPU workers
+        "dev": "l4",  # single L4 GPU
+        "cluster": "cpu-l4",  # CPU head + L4 GPU workers
     },
     "nebius": {
-        "dev": "h100",         # single H100 GPU
-        "cluster": "cpu-h100s", # CPU head + H100 workers
+        "dev": "h100",  # single H100 GPU
+        "cluster": "cpu-h100s",  # CPU head + H100 workers
     },
 }
 
@@ -29,7 +29,8 @@ def _find_repo_root():
     """Find the git repo root from CWD, or fall back to CWD."""
     result = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode == 0:
         return Path(result.stdout.strip())
@@ -70,7 +71,9 @@ def init_cmd():
         if p in configured:
             provider_choices.append(Choice(value=p, name=p.upper(), enabled=True))
         else:
-            provider_choices.append({"value": p, "name": p.upper(), "disabled": "not configured"})
+            provider_choices.append(
+                {"value": p, "name": p.upper(), "disabled": "not configured"}
+            )
     providers = inquirer.checkbox(
         message="Select providers to initialize",
         choices=provider_choices,
@@ -89,7 +92,9 @@ def init_cmd():
         pdir = brr_dir / provider
         if pdir.is_dir() and any(pdir.glob("*.yaml")):
             existing = [p.stem for p in pdir.glob("*.yaml")]
-            click.echo(f"Already initialized for {provider} — found templates: {', '.join(existing)}")
+            click.echo(
+                f"Already initialized for {provider} — found templates: {', '.join(existing)}"
+            )
             if not click.confirm("Overwrite?"):
                 providers = [p for p in providers if p != provider]
 
@@ -124,10 +129,13 @@ def init_cmd():
 
         if is_uv_project:
             extra = f"brr-cli[{provider}]"
-            click.echo(f"\nDetected uv project — adding {extra} and ray[default] to brr dependency group...")
+            click.echo(
+                f"\nDetected uv project — adding {extra} and ray[default] to brr dependency group..."
+            )
             subprocess.run(
                 ["uv", "add", "--group", "brr", extra, "ray[default]"],
-                cwd=str(project_root), check=False,
+                cwd=str(project_root),
+                check=False,
             )
 
         # Write a small project setup stub (global setup handles the heavy lifting)
@@ -140,8 +148,6 @@ set -Eeuo pipefail
 # Sync project dependencies (uses locked versions from uv.lock)
 if [ -d "$HOME/code/{repo_name}" ]; then
   cd "$HOME/code/{repo_name}"
-  # Pre-fetch the Python version required by the project so uv sync doesn't hang.
-  uv python install
   uv sync --group brr
 fi
 
@@ -165,8 +171,12 @@ source "/tmp/brr/venv/bin/activate"
 
         click.echo(f"\nInitialized {provider} project in .brr/{provider}/")
         click.echo(f"  .brr/{provider}/dev.yaml      Single GPU ({repo_name}-dev)")
-        click.echo(f"  .brr/{provider}/cluster.yaml  CPU head + GPU workers ({repo_name}-cluster)")
-        click.echo(f"  .brr/{provider}/setup.sh      Project deps (runs after global setup)")
+        click.echo(
+            f"  .brr/{provider}/cluster.yaml  CPU head + GPU workers ({repo_name}-cluster)"
+        )
+        click.echo(
+            f"  .brr/{provider}/setup.sh      Project deps (runs after global setup)"
+        )
 
     click.echo(f"\nTemplates are standard Ray YAML — edit them or add your own.")
     click.echo(f"\nLaunch:")

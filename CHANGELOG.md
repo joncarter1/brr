@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- Update notice — brr now checks PyPI once per day and prints a notice when a newer version is available.
+- Template documentation (`docs/templates.md`) and inline docs in all YAML template files.
+- Pre-installed Python versions (3.10–3.13) for faster autoscaler node setup.
+
+### Changed
+
+- Global `setup.sh` is now always the built-in package version. It updates automatically with `uv tool upgrade brr-cli`. The `~/.brr/setup.sh` copy is no longer created or used. Removed `--dev-setup` flag.
+
+### Fixed
+
+- `brr up --dry-run` showing unrendered `{{VAR}}` placeholders instead of resolved values.
+- `sync-repo.sh` incorrectly running on worker nodes (now head-only).
+
 ## 0.3.0
 
 ### Added

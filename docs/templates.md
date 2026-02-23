@@ -1,6 +1,6 @@
 # Cluster Templates
 
-brr cluster templates are [Ray cluster YAML files](https://docs.ray.io/en/latest/cluster/vms/references/ray-cluster-configuration.html) with brr extensions for config placeholders, automatic setup injection, and CLI overrides.
+brr cluster templates are [Ray cluster YAML files](https://docs.ray.io/en/latest/cluster/vms/references/ray-cluster-configuration.html) with extensions for config placeholders, automatic setup injection, and CLI overrides.
 
 ## Built-in templates
 
@@ -28,7 +28,7 @@ Use an explicit provider prefix to bypass the project and use a built-in: `brr u
 
 ## Placeholders
 
-Templates use `{{VAR}}` placeholders that are filled from `~/.brr/config.env` (set by `brr configure`):
+Templates use `{{VAR}}` placeholders that are filled from `~/.brr/config.env` (can be set via `brr configure`):
 
 ### AWS
 | Placeholder | Description |
@@ -51,7 +51,7 @@ Templates use `{{VAR}}` placeholders that are filled from `~/.brr/config.env` (s
 
 When you run `brr up`, the template is processed through several steps before being passed to `ray up`. The function `inject_brr_infra()` adds:
 
-- **`file_mounts`** — mounts a staging directory to `/tmp/brr/` on all nodes, containing setup scripts, config, and credentials
+- **`file_mounts`** — mounts a staging directory to `/tmp/brr/` on all nodes, containing setup scripts, config, and credentials. Any `file_mounts` you define in the template are preserved — brr merges its entry alongside yours.
 - **`initialization_commands`** — installs pip (required by Ray before setup runs)
 - **`setup_commands`** — prepends `bash /tmp/brr/setup.sh` (global setup) and `bash /tmp/brr/project-setup.sh` (project setup, if in a project). Any `setup_commands` you add to the template run after these.
 - **`head_setup_commands`** — appends `bash /tmp/brr/sync-repo.sh` to clone the project repo on first deploy (only if inside a git repo with a remote)
@@ -63,7 +63,7 @@ Use `brr up <template> --dry-run` to see the final YAML after all injection and 
 On every node boot, scripts run in this order:
 
 1. **Global setup** (`~/.brr/setup.sh`) — packages, filesystem mounts, uv, Python venv, Ray, AI tools, dotfiles, idle shutdown
-2. **Project setup** (`.brr/{provider}/setup.sh`) — project-specific dependencies
+2. **Project setup** (`.brr/setup.sh`) — project-specific dependencies
 3. **User setup_commands** — anything you add to `setup_commands:` in the template
 4. **Sync repo** (head node only, first deploy) — clones the git repo to `~/code/{repo_name}`
 
@@ -87,7 +87,7 @@ These are shorthand names that work with any template:
 | `az` | `provider.availability_zone` | Availability zone |
 | `ami` | `available_node_types.ray.head.default.node_config.ImageId` | Head node AMI |
 | `spot` | (special) | Enable/disable spot pricing |
-| `capacity_reservation` | (special) | AWS capacity reservation ID |
+| `capacity_reservation` | (special) | AWS capacity reservation ID e.g. for H100s |
 
 ### Dot-notation
 
@@ -133,4 +133,3 @@ Nebius uses a custom Ray node provider, so `node_config` fields differ from AWS:
 
 - `cache_stopped_nodes: true` — stop nodes on scale-down instead of deleting (faster restart, but incurs disk fees while stopped)
 - `cache_stopped_nodes: false` — delete nodes on scale-down (no idle costs, slower to scale back up)
-- `idle_timeout_minutes` — how long an idle node waits before triggering scale-down

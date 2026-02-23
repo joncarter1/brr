@@ -138,7 +138,15 @@ def init_cmd():
                 check=False,
             )
 
-        # Write a small project setup stub (global setup handles the heavy lifting)
+        click.echo(f"\nInitialized {provider} project in .brr/{provider}/")
+        click.echo(f"  .brr/{provider}/dev.yaml      Single GPU ({repo_name}-dev)")
+        click.echo(
+            f"  .brr/{provider}/cluster.yaml  CPU head + GPU workers ({repo_name}-cluster)"
+        )
+
+    # Write project setup stub once (shared across providers)
+    setup_sh = brr_dir / "setup.sh"
+    if not setup_sh.exists():
         if is_uv_project:
             setup_stub = f"""\
 #!/bin/bash
@@ -167,16 +175,8 @@ source "/tmp/brr/venv/bin/activate"
 # uv pip install torch
 # uv pip install jax[cuda12]
 """
-        (provider_dir / "setup.sh").write_text(setup_stub)
-
-        click.echo(f"\nInitialized {provider} project in .brr/{provider}/")
-        click.echo(f"  .brr/{provider}/dev.yaml      Single GPU ({repo_name}-dev)")
-        click.echo(
-            f"  .brr/{provider}/cluster.yaml  CPU head + GPU workers ({repo_name}-cluster)"
-        )
-        click.echo(
-            f"  .brr/{provider}/setup.sh      Project deps (runs after global setup)"
-        )
+        setup_sh.write_text(setup_stub)
+        click.echo(f"\n  .brr/setup.sh             Project deps (runs after global setup)")
 
     click.echo(f"\nTemplates are standard Ray YAML — edit them or add your own.")
     click.echo(f"\nLaunch:")

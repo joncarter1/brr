@@ -40,15 +40,15 @@ Projects are repos with a `.brr/` directory (created by `brr init`):
 
 ```
 .brr/
+  setup.sh             # Project deps — runs after global setup on every node
   aws/dev.yaml         # Project template (standard Ray YAML)
   aws/cluster.yaml
-  aws/setup.sh         # Runs after global setup on every node
 ```
 
 Key behaviors:
 - `state.py:find_project_root()` walks up from CWD looking for `.brr/` with YAML files (skips `~/.brr`).
 - `resolve_project_provider()` infers provider from project: single provider → automatic; multiple → requires explicit prefix.
-- Setup layering: global `~/.brr/setup.sh` runs first, then project `.brr/{provider}/setup.sh`.
+- Setup layering: global `~/.brr/setup.sh` runs first, then project `.brr/setup.sh`.
 - uv-managed projects: `brr init` writes `uv run --group brr ray start` directly into project template YAML.
 
 ### Key Modules
@@ -57,7 +57,7 @@ Key behaviors:
 - **`brr/cluster.py`** — Cluster lifecycle. Uses `_find_ray()` to locate the Ray binary and `_run_ray()` to exec it.
 - **`brr/state.py`** — Config parsing (`read_config`/`write_config`), state dirs, project discovery, provider checks.
 - **`brr/templates.py`** — Template resolution, rendering, override system, staging, baked image substitution.
-- **`brr/commands/init.py`** — `brr init` scaffolds `.brr/{provider}/` with templates + setup.sh. Maps project template names to built-in ones (`_TEMPLATE_MAP`).
+- **`brr/commands/init.py`** — `brr init` scaffolds `.brr/{provider}/` with templates + `.brr/setup.sh`. Maps project template names to built-in ones (`_TEMPLATE_MAP`).
 - **`brr/commands/configure.py`** — Interactive wizard: cloud provider, AI tools, general settings. Uses InquirerPy for menus.
 - **`brr/commands/bake.py`** — Pre-bakes global setup into AMIs/images. Strips secrets (`_BAKE_STRIP_KEYS`) before baking. Tracks staleness via setup.sh hash.
 - **`brr/commands/nuke.py`** — Destructive teardown. Multi-region parallel cleanup with ThreadPoolExecutor (AWS) or async SDK (Nebius).

@@ -54,10 +54,10 @@ This creates:
 
 ```
 .brr/
+  setup.sh          # Project-specific dependencies (shared across providers)
   aws/
     dev.yaml        # Single GPU for development
     cluster.yaml    # CPU head + GPU workers
-    setup.sh        # Project-specific dependencies
 ```
 
 Templates are Ray cluster YAML — edit them or add your own. Inside a project, use short names:
@@ -74,6 +74,8 @@ If your project uses `uv`, `brr init` automatically adds `brr-cli` and `ray` to 
 All global config lives in `~/.brr/config.env`.
 
 ## Templates
+
+See [docs/templates.md](docs/templates.md) for the full template reference (placeholders, injection, overrides, Nebius fields).
 
 ### Built-in templates
 
@@ -133,7 +135,7 @@ Edit it to customize:
 vim ~/.brr/setup.sh
 ```
 
-Project-specific dependencies go in `.brr/{provider}/setup.sh` (created by `brr init`), which runs after the global setup.
+Project-specific dependencies go in `.brr/setup.sh` (created by `brr init`), which runs after the global setup.
 
 ### uv integration
 

@@ -49,6 +49,22 @@ available_node_types:
             VolumeSize: 200
             VolumeType: gp3
 
+# Upload local files/dirs to all nodes (merged with brr's own file_mounts).
+# file_mounts:
+#   /remote/path: /local/path
+
+# Commands run on all nodes after brr's setup.sh (and project setup.sh if present).
+# setup_commands:
+#   - pip install my-package
+
+# Commands run only on the head node after setup_commands.
+# head_setup_commands:
+#   - echo "head node ready"
+
+# Commands run only on worker nodes after setup_commands.
+# worker_setup_commands:
+#   - echo "worker ready"
+
 head_start_ray_commands:
   - source /tmp/brr/venv/bin/activate && ray stop
   - source /tmp/brr/venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0

@@ -338,12 +338,20 @@ def prepare_staging(name, provider="aws", project_root=None, use_pkg_setup=False
     # Layer 1: Global setup — from ~/.brr/setup.sh or built-in
     (staging / "setup.sh").write_text(_read_global_setup(use_pkg=use_pkg_setup))
 
-    # Layer 2: Project setup — from .brr/{provider}/setup.sh if in a project
+    # Layer 2: Project setup — from .brr/setup.sh (or legacy .brr/{provider}/setup.sh)
     project_setup_staged = False
     if project_root is not None:
-        project_setup = Path(project_root) / ".brr" / provider / "setup.sh"
+        project_setup = Path(project_root) / ".brr" / "setup.sh"
+        legacy_setup = Path(project_root) / ".brr" / provider / "setup.sh"
         if project_setup.exists():
             (staging / "project-setup.sh").write_text(project_setup.read_text())
+            project_setup_staged = True
+        elif legacy_setup.exists():
+            print(
+                f"  ⚠ .brr/{provider}/setup.sh is deprecated — "
+                f"move it to .brr/setup.sh (shared across providers)"
+            )
+            (staging / "project-setup.sh").write_text(legacy_setup.read_text())
             project_setup_staged = True
 
     # Remove stale project-setup.sh if not staging one this time

@@ -69,7 +69,7 @@ class AWSProvider(Provider):
         has_baked = config.get("AMI_UBUNTU_BAKED") or config.get("AMI_DL_BAKED")
         if has_baked and bake_hash and bake_hash != global_setup_hash():
             return (
-                "Warning: ~/.brr/setup.sh has changed since last bake. "
+                "Warning: setup.sh has changed since last bake. "
                 "Run `brr bake aws` to rebuild."
             )
         elif not has_baked:

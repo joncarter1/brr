@@ -36,7 +36,7 @@ class NebiusProvider(Provider):
         has_baked = config.get("NEBIUS_IMAGE_CPU_BAKED") or config.get("NEBIUS_IMAGE_GPU_BAKED")
         if has_baked and bake_hash and bake_hash != global_setup_hash():
             return (
-                "Warning: ~/.brr/setup.sh has changed since last bake. "
+                "Warning: setup.sh has changed since last bake. "
                 "Run `brr bake nebius` to rebuild."
             )
         elif not has_baked:

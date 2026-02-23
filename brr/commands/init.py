@@ -166,7 +166,7 @@ fi
             setup_stub = """\
 #!/bin/bash
 # Project setup — runs after global setup on every node boot.
-# Global setup (~/.brr/setup.sh) already provides:
+# Global setup (brr package) already provides:
 #   packages, mounts, venv, Ray, Claude Code, SSH, dotfiles.
 # Add project-specific dependencies below.
 set -Eeuo pipefail

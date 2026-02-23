@@ -1,7 +1,6 @@
 #!/bin/bash
 # ============================================================
-# brr global setup — edit this file to customize node bootstrap
-# Location: ~/.brr/setup.sh
+# brr global setup — built-in, updates automatically with brr upgrades
 # Bake into AMI: brr bake aws
 # ============================================================
 

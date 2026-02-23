@@ -128,12 +128,7 @@ Both providers can run simultaneously. For projects with multiple providers, use
 
 ### Node setup
 
-`~/.brr/setup.sh` runs on every node boot. It installs packages, mounts shared storage, sets up Python/Ray, GitHub SSH keys, AI coding tools, dotfiles, and the idle shutdown daemon.
-
-Edit it to customize:
-```sh
-vim ~/.brr/setup.sh
-```
+The built-in `setup.sh` runs on every node boot. It installs packages, mounts shared storage, sets up Python/Ray, GitHub SSH keys, AI coding tools, dotfiles, and the idle shutdown daemon. It updates automatically when you upgrade brr.
 
 Project-specific dependencies go in `.brr/setup.sh` (created by `brr init`), which runs after the global setup.
 
@@ -185,7 +180,7 @@ brr bake aws          # bake both CPU + GPU AMIs
 brr bake status       # check if baked images are up to date
 ```
 
-After baking, clusters boot from the pre-built image. Only project-specific deps need to install. `brr up` warns when `setup.sh` has changed since the last bake.
+After baking, clusters boot from the pre-built image. Only project-specific deps need to install. `brr up` warns when setup.sh has changed since the last bake.
 
 ### Idle shutdown
 

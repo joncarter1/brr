@@ -13,7 +13,6 @@ from brr.state import (
     read_config,
     write_config,
     CONFIG_PATH,
-    STATE_DIR,
     CONFIG_DEFAULTS,
 )
 
@@ -31,24 +30,6 @@ GENERAL_DEFAULTS = {
     "DOTFILES_REPO": "",
     **CONFIG_DEFAULTS,
 }
-
-
-def copy_setup_sh_if_needed():
-    """Copy built-in setup.sh to ~/.brr/setup.sh if it doesn't exist."""
-    from importlib.resources import files as pkg_files
-
-    setup_dest = STATE_DIR / "setup.sh"
-    if not setup_dest.exists():
-        pkg = pkg_files("brr.data")
-        setup_dest.write_text(pkg.joinpath("setup.sh").read_text())
-        console.print(f"\nGlobal setup: [green]{setup_dest}[/green]")
-        console.print(
-            "Edit to customize node bootstrap (tools, dotfiles, packages, etc.)"
-        )
-    else:
-        console.print(
-            f"\nGlobal setup: [green]{setup_dest}[/green] (already exists, not overwritten)"
-        )
 
 
 def _run_provider_wizard(provider):
@@ -72,8 +53,6 @@ def _run_provider_wizard(provider):
         from brr.nebius.configure import configure_nebius
 
         configure_nebius()
-
-    copy_setup_sh_if_needed()
 
 
 # ---------------------------------------------------------------------------

@@ -282,8 +282,7 @@ def _sync_ssh_config(provider, cluster_name, short_name=None):
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompts")
 @click.option("--dry-run", is_flag=True, help="Print rendered config without launching")
 @click.option("--no-project", is_flag=True, help="Ignore .brr/ project directory")
-@click.option("--dev-setup", is_flag=True, help="Use package setup.sh instead of ~/.brr/setup.sh")
-def up(template, overrides, no_config_cache, yes, dry_run, no_project, dev_setup):
+def up(template, overrides, no_config_cache, yes, dry_run, no_project):
     """Launch or update a Ray cluster.
 
     TEMPLATE is a built-in with provider prefix (aws:h100, nebius:cpu),
@@ -369,7 +368,7 @@ def up(template, overrides, no_config_cache, yes, dry_run, no_project, dev_setup
         if git_info is not None:
             _validate_git_for_sync(project_root, git_info, config)
 
-    staging = prepare_staging(cluster_name, provider, project_root=project_root, use_pkg_setup=dev_setup)
+    staging = prepare_staging(cluster_name, provider, project_root=project_root)
     inject_brr_infra(rendered, staging, git_info=git_info)
 
     # Apply baked images if available (works for both AWS and Nebius)

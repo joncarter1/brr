@@ -18,7 +18,6 @@
 ### Added
 
 - `--no-project` flag for `brr up` to skip `.brr/` project auto-discovery.
-- `--dev-setup` flag for `brr up` to use the package's built-in `setup.sh` instead of `~/.brr/setup.sh`.
 
 ### Fixed
 

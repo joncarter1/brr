@@ -48,7 +48,7 @@ Projects are repos with a `.brr/` directory (created by `brr init`):
 Key behaviors:
 - `state.py:find_project_root()` walks up from CWD looking for `.brr/` with YAML files (skips `~/.brr`).
 - `resolve_project_provider()` infers provider from project: single provider → automatic; multiple → requires explicit prefix.
-- Setup layering: global `~/.brr/setup.sh` runs first, then project `.brr/setup.sh`.
+- Setup layering: built-in global `setup.sh` runs first, then project `.brr/setup.sh`.
 - uv-managed projects: `brr init` writes `uv run --group brr ray start` directly into project template YAML.
 
 ### Key Modules

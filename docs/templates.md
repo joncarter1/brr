@@ -62,7 +62,7 @@ Use `brr up <template> --dry-run` to see the final YAML after all injection and 
 
 On every node boot, scripts run in this order:
 
-1. **Global setup** (`~/.brr/setup.sh`) — packages, filesystem mounts, uv, Python venv, Ray, AI tools, dotfiles, idle shutdown
+1. **Global setup** (built-in) — packages, filesystem mounts, uv, Python venv, Ray, AI tools, dotfiles, idle shutdown
 2. **Project setup** (`.brr/setup.sh`) — project-specific dependencies
 3. **User setup_commands** — anything you add to `setup_commands:` in the template
 4. **Sync repo** (head node only, first deploy) — clones the git repo to `~/code/{repo_name}`

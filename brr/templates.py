@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from brr.state import CONFIG_PATH, STATE_DIR, staging_dir_for, rendered_yaml_for
+from brr.state import CONFIG_PATH, staging_dir_for, rendered_yaml_for
 
 # Global args: friendly aliases available for all templates.
 # "spot" has special handling (toggle InstanceMarketOptions).
@@ -310,21 +310,17 @@ def apply_overrides(config, overrides, template_aliases=None):
     return config
 
 
-def _read_global_setup(use_pkg=False):
-    """Read the global setup script from ~/.brr/setup.sh, falling back to built-in."""
-    global_setup = STATE_DIR / "setup.sh"
-    if not use_pkg and global_setup.exists():
-        return global_setup.read_text()
-    pkg = files("brr.data")
-    return pkg.joinpath("setup.sh").read_text()
+def _read_global_setup():
+    """Read the built-in global setup script."""
+    return files("brr.data").joinpath("setup.sh").read_text()
 
 
-def prepare_staging(name, provider="aws", project_root=None, use_pkg_setup=False):
+def prepare_staging(name, provider="aws", project_root=None):
     """Create staging directory with support files for a cluster.
 
     Two-layer setup:
-      1. setup.sh (global) — from ~/.brr/setup.sh or built-in
-      2. project-setup.sh (project) — from .brr/{provider}/setup.sh if it exists
+      1. setup.sh (global) — built-in, updates with brr package upgrades
+      2. project-setup.sh (project) — from .brr/setup.sh if it exists
 
     Also writes idle-shutdown.sh and config.env.
     Returns the staging directory path.
@@ -335,8 +331,8 @@ def prepare_staging(name, provider="aws", project_root=None, use_pkg_setup=False
 
     pkg = files("brr.data")
 
-    # Layer 1: Global setup — from ~/.brr/setup.sh or built-in
-    (staging / "setup.sh").write_text(_read_global_setup(use_pkg=use_pkg_setup))
+    # Layer 1: Global setup — built-in from brr package
+    (staging / "setup.sh").write_text(_read_global_setup())
 
     # Layer 2: Project setup — from .brr/setup.sh (or legacy .brr/{provider}/setup.sh)
     project_setup_staged = False

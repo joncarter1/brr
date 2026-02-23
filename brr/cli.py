@@ -14,6 +14,7 @@ from brr.commands.configure import configure
 from brr.cluster import (
     up, down, attach, clean, vscode, list_cmd, templates,
 )
+from brr.update import print_update_notice
 
 
 @click.group()
@@ -27,6 +28,7 @@ def cli():
       brr init         Initialize project templates
       brr up dev       Launch a cluster
     """
+    print_update_notice()
 
 
 @cli.command("completion")

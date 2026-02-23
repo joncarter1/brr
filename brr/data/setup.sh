@@ -377,8 +377,12 @@ export UV_CACHE_DIR="/tmp/uv"
 export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"
 _repo_root=$(timeout 3 git rev-parse --show-toplevel 2>/dev/null)
 if [ -n "$_repo_root" ]; then
-  export UV_PROJECT_ENVIRONMENT="/tmp/venvs/$(basename "$_repo_root")"
-  mkdir -p "$UV_PROJECT_ENVIRONMENT"
+  _venv="/tmp/venvs/$(basename "$_repo_root")"
+  export UV_PROJECT_ENVIRONMENT="$_venv"
+  mkdir -p "$_venv"
+  if [ -f "$_venv/pyvenv.cfg" ]; then
+    export VIRTUAL_ENV="$_venv"
+  fi
 fi
 exec "$HOME/.local/lib/uv" "$@"
 UVWRAP

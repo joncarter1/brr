@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+### Fixed
+
+- `uv pip` commands (show, install, list) not targeting the project venv on cluster nodes. The uv wrapper now also sets `VIRTUAL_ENV` when a project venv exists.
+
 ## 0.4.0
 
 ### Added

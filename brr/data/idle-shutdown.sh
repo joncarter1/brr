@@ -85,7 +85,7 @@ get_gpu_usage() {
 
 get_ssh_sessions() {
     local count
-    count=$(who | grep -c 'pts/' 2>/dev/null) || count=0
+    count=$(ss -tnp 2>/dev/null | grep -c ':22 ' 2>/dev/null) || count=0
     echo "$count"
 }
 

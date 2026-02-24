@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.2
+
+### Fixed
+
+- Idle shutdown daemon never triggering when tmux is running — `get_ssh_sessions()` counted tmux panes as SSH sessions. Now uses `ss` to count actual TCP connections on port 22.
+- `brr up aws:cluster` printing `brr attach cluster` instead of `brr attach aws:cluster` — provider prefix was dropped from connect messages.
+- AWS staging paths not namespaced by provider — now all providers use `~/.brr/staging/{provider}/{name}` consistently.
+
 ## 0.4.1
 
 ### Fixed

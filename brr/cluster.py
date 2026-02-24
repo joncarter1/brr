@@ -254,7 +254,7 @@ def _staging_project_map():
     return mapping
 
 
-def _sync_ssh_config(provider, cluster_name, short_name=None):
+def _sync_ssh_config(provider, cluster_name, display_name=None):
     """Query the cloud for the cluster head IP and update local SSH config."""
     from brr.providers import get_provider
     from brr.ssh import update_ssh_config
@@ -267,7 +267,7 @@ def _sync_ssh_config(provider, cluster_name, short_name=None):
     if head_ip:
         ssh_alias = cluster_ssh_alias(provider, cluster_name)
         update_ssh_config(ssh_alias, head_ip, prov.ssh_key(config))
-        attach_name = short_name or cluster_name
+        attach_name = display_name or cluster_name
         console.print(f"Updated local SSH config: [green]{ssh_alias}[/green]")
         console.print(f"  Connect with: [bold]brr attach {attach_name}[/bold]")
         console.print(f"  VS Code:      [bold]brr vscode {attach_name}[/bold]")
@@ -410,7 +410,8 @@ def up(template, overrides, no_config_cache, yes, dry_run, no_project):
 
     # Post-ray: sync SSH config even if ray up had warnings (non-zero exit)
     try:
-        _sync_ssh_config(provider, cluster_name, short_name=tpl_name if project_root else None)
+        display_name = tpl_name if project_root else f"{provider}:{tpl_name}"
+        _sync_ssh_config(provider, cluster_name, display_name=display_name)
     except Exception as e:
         console.print(f"[yellow]Warning: SSH config sync failed: {e}[/yellow]")
 

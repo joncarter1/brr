@@ -97,15 +97,11 @@ def cluster_ssh_alias(provider, name):
 
 def staging_dir_for(name, provider="aws"):
     """Return the staging directory for a cluster."""
-    if provider == "aws":
-        return STATE_DIR / "staging" / name
     return STATE_DIR / "staging" / provider / name
 
 
 def rendered_yaml_for(name, provider="aws"):
     """Return the rendered YAML path for a cluster."""
-    if provider == "aws":
-        return STATE_DIR / "staging" / f"{name}.yaml"
     return STATE_DIR / "staging" / provider / f"{name}.yaml"
 
 

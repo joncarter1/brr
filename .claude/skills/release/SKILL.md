@@ -73,19 +73,24 @@ Follow these steps in order. Stop and report if any step fails.
 - Only include subsection headers that have entries.
 - Summarize changes from the git log. Be concise — one line per change.
 
-### 7. Commit
+### 7. Review changelog with user
+
+- Show the drafted changelog entry to the user using `AskUserQuestion`.
+- If the user requests edits, apply them to `CHANGELOG.md` before proceeding.
+
+### 8. Commit
 
 - Stage only `pyproject.toml` and `CHANGELOG.md`.
 - Commit with message: `bump version to X.Y.Z and update changelog`
 - Include `Co-Authored-By` trailer.
 
-### 8. Tag and push
+### 9. Tag and push
 
 - Create tag: `git tag vX.Y.Z`
 - Push commit and tag: `git push && git push --tags`
 - This triggers the `Publish to PyPI` workflow which publishes to PyPI and creates a GitHub Release automatically.
 
-### 9. Verify
+### 10. Verify
 
 - Run `gh run list --workflow=publish.yml --limit 1` to confirm the workflow was triggered.
 - Print a summary of what was released.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+
+### Fixed
+
+- Shared filesystem mount lost on cached node restarts — added `brr-ensure-mount` helper that re-establishes the home bind-mount.
+
+### Changed
+
+- All template commands (`up`, `down`, `attach`, etc.) now require explicit `provider:name` prefix — bare names like `brr up dev` no longer work.
+- PyPI publish workflow now triggers on tag push instead of GitHub release.
+
 ## 0.4.2
 
 ### Fixed

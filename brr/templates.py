@@ -59,28 +59,6 @@ def find_project_templates(project_root, provider=None):
     return sorted(p.stem for p in brr_dir.glob("*/*.yaml"))
 
 
-def resolve_default_template(project_root, provider=None):
-    """Pick the default template for a project.
-
-    Returns the sole .yaml if only one exists, scoped to provider subdirectory if given.
-    Raises click.UsageError if ambiguous.
-    """
-    import click
-
-    templates = find_project_templates(project_root, provider)
-
-    if not templates:
-        raise click.UsageError(f"No templates found in {project_root}/.brr/")
-
-    if len(templates) == 1:
-        return templates[0]
-
-    raise click.UsageError(
-        f"Multiple templates in .brr/: {', '.join(templates)}. "
-        "Specify one with `brr up <name>`."
-    )
-
-
 def resolve_template(name, provider="aws", project_root=None):
     """Find a template by name. Returns (template_content, template_name).
 
@@ -421,6 +399,15 @@ def inject_brr_infra(config, staging, git_info=None):
     config.setdefault("head_setup_commands", [])
     config.setdefault("worker_setup_commands", [])
     config.setdefault("cluster_synced_files", [])
+
+    # Ensure shared filesystem mounts are ready before ray starts.
+    # On cached node restarts, Ray skips setup_commands — the fstab NFS mount
+    # races with sshd, and the home bind-mount is lost entirely.
+    _ensure_mount = "brr-ensure-mount 2>/dev/null || true"
+    config.setdefault("head_start_ray_commands", [])
+    config.setdefault("worker_start_ray_commands", [])
+    config["head_start_ray_commands"].insert(0, _ensure_mount)
+    config["worker_start_ray_commands"].insert(0, _ensure_mount)
 
     # For external providers: embed SSH public key content into node_configs
     # so the NodeProvider can inject it via cloud-init. We embed the content

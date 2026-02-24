@@ -145,26 +145,6 @@ def find_project_providers(project_root):
     )
 
 
-def resolve_project_provider(project_root):
-    """Resolve the default provider for a project.
-
-    If one provider → returns it.
-    If multiple → raises click.UsageError (user must use prefix).
-    If none → returns None.
-    """
-    providers = find_project_providers(project_root)
-    if not providers:
-        return None
-    if len(providers) == 1:
-        return providers[0]
-    import click
-
-    raise click.UsageError(
-        f"Multiple providers in .brr/: {', '.join(providers)}. "
-        f"Use prefix (e.g. `brr up aws:dev`)."
-    )
-
-
 def read_merged_config(project_root=None):
     """Read global config (CONFIG_DEFAULTS → ~/.brr/config.env).
 

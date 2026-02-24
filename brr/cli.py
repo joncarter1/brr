@@ -26,7 +26,7 @@ def cli():
     Quick start:
       brr configure    Set up cloud provider credentials
       brr init         Initialize project templates
-      brr up dev       Launch a cluster
+      brr up aws:dev   Launch a cluster
     """
     print_update_notice()
 

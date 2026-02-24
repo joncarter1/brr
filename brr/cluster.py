@@ -12,12 +12,10 @@ from rich.table import Table
 
 from brr.state import (
     read_config, read_merged_config, find_project_root, find_project_providers,
-    resolve_project_provider, parse_provider, cluster_ssh_alias,
-    check_provider_configured, is_provider_configured,
+    cluster_ssh_alias, check_provider_configured, is_provider_configured,
 )
 from brr.templates import (
     resolve_template,
-    resolve_default_template,
     render,
     apply_overrides,
     apply_baked_images,
@@ -121,32 +119,33 @@ def _validate_git_for_sync(project_root, git_info, config):
 
 
 def _resolve_provider(name):
-    """Parse provider:name syntax, inferring provider from project if no prefix.
+    """Parse provider:name syntax. Requires explicit prefix.
 
-    Returns (provider, template_or_cluster_name, explicit).
-    - Explicit prefix (aws:dev) → explicit=True, provider from prefix
-    - Bare name (dev) → explicit=False, provider inferred from project
-    - File path (./foo.yaml) → explicit=False, default provider
+    Returns (provider, template_or_cluster_name).
+    - Explicit prefix (aws:dev) → provider from prefix
+    - File path (./foo.yaml) → default provider (aws)
+    - Bare name (dev) → raises UsageError
     """
-    explicit = ":" in name and not name.endswith(".yaml") and "/" not in name
-    provider, parsed_name = parse_provider(name)
-    if not explicit:
-        project_root = find_project_root()
-        if project_root is not None:
-            inferred = resolve_project_provider(project_root)
-            if inferred:
-                provider = inferred
-    return provider, parsed_name, explicit
+    # File path — pass through with default provider
+    if "/" in name or name.endswith(".yaml"):
+        return "aws", name
+    # Require explicit provider:name prefix
+    if ":" not in name:
+        raise click.UsageError(
+            f"Template '{name}' requires a provider prefix.\n"
+            f"Use provider:name syntax (e.g. aws:{name}, nebius:{name})."
+        )
+    provider, _, tpl = name.partition(":")
+    return provider, tpl
 
 
-def _project_root_for(provider, tpl_name, explicit):
+def _project_root_for(provider, tpl_name):
     """Find project_root relevant to this template.
 
-    Explicit provider:name → project if that template exists there, else None (built-in).
-    Bare name → project if found, else None.
+    Returns project root if a matching project template exists, else None (built-in).
     """
     project_root = find_project_root()
-    if explicit and project_root is not None:
+    if project_root is not None:
         project_tpl = Path(project_root) / ".brr" / provider / f"{tpl_name}.yaml"
         if not project_tpl.exists():
             return None  # not in project, fall to built-in
@@ -276,20 +275,17 @@ def _sync_ssh_config(provider, cluster_name, display_name=None):
 
 
 @click.command()
-@click.argument("template", required=False, default=None)
+@click.argument("template")
 @click.argument("overrides", nargs=-1)
 @click.option("--no-config-cache", is_flag=True, help="Disable Ray config cache")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompts")
 @click.option("--dry-run", is_flag=True, help="Print rendered config without launching")
-@click.option("--no-project", is_flag=True, help="Ignore .brr/ project directory")
-def up(template, overrides, no_config_cache, yes, dry_run, no_project):
+def up(template, overrides, no_config_cache, yes, dry_run):
     """Launch or update a Ray cluster.
 
-    TEMPLATE is a built-in with provider prefix (aws:h100, nebius:cpu),
-    a project template name (dev, cluster), or a .yaml file path.
-
-    If omitted inside a project with .brr/, the default project template
-    is used automatically and the repo is synced to ~/code/ on the cluster.
+    TEMPLATE is provider:name (aws:h100, nebius:cpu) or a .yaml file path.
+    Inside a project, provider:name resolves project templates first (e.g.
+    aws:dev → .brr/aws/dev.yaml), then falls back to built-in templates.
 
     OVERRIDES are key=value pairs applied to the rendered YAML.
     Use `brr templates show TEMPLATE` to see available overrides.
@@ -304,30 +300,8 @@ def up(template, overrides, no_config_cache, yes, dry_run, no_project):
     """
     import yaml
 
-    # Project auto-discovery
-    project_root = find_project_root()
-    if no_project:
-        project_root = None
-
-    if template is None:
-        if project_root is None:
-            raise click.UsageError(
-                "No TEMPLATE given and no .brr/ project found.\n"
-                "Run `brr init` to set up a project, or specify a template: brr up <template>"
-            )
-        provider = resolve_project_provider(project_root)
-        tpl_name = resolve_default_template(project_root, provider=provider)
-        console.print(f"Project: [bold]{project_root.name}[/bold]")
-    else:
-        provider, tpl_name, explicit = _resolve_provider(template)
-        project_root = _project_root_for(provider, tpl_name, explicit)
-        if not explicit and project_root is None:
-            # Bare name outside a project — require prefix
-            raise click.UsageError(
-                f"Template '{tpl_name}' requires a project (.brr/ directory).\n"
-                f"Use a provider prefix for built-in templates: brr up {provider}:{tpl_name}\n"
-                f"Or run `brr init` to set up a project in this directory."
-            )
+    provider, tpl_name = _resolve_provider(template)
+    project_root = _project_root_for(provider, tpl_name)
 
     config, _ = read_merged_config(project_root)
     check_provider_configured(provider, config)
@@ -410,7 +384,7 @@ def up(template, overrides, no_config_cache, yes, dry_run, no_project):
 
     # Post-ray: sync SSH config even if ray up had warnings (non-zero exit)
     try:
-        display_name = tpl_name if project_root else f"{provider}:{tpl_name}"
+        display_name = f"{provider}:{tpl_name}"
         _sync_ssh_config(provider, cluster_name, display_name=display_name)
     except Exception as e:
         console.print(f"[yellow]Warning: SSH config sync failed: {e}[/yellow]")
@@ -439,8 +413,8 @@ def down(template, yes, delete):
     from brr.ssh import remove_ssh_config
     from brr.state import staging_dir_for, rendered_yaml_for
 
-    provider, tpl_name, explicit = _resolve_provider(template)
-    project_root = _project_root_for(provider, tpl_name, explicit)
+    provider, tpl_name = _resolve_provider(template)
+    project_root = _project_root_for(provider, tpl_name)
     cluster_name = _resolve_cluster_name(tpl_name, provider, project_root)
     ssh_alias = cluster_ssh_alias(provider, cluster_name)
 
@@ -496,14 +470,13 @@ def down(template, yes, delete):
 def attach(cluster, command):
     """SSH into the head node of a Ray cluster.
 
-    CLUSTER is a template name (aws:h100, dev) or cluster name.
-    Use provider:name syntax for built-in templates (e.g. nebius:h100).
+    CLUSTER is provider:name (e.g. aws:h100, nebius:cpu).
     Uses the SSH config entry written by `brr up`.
 
     Optionally pass a COMMAND to run on the node (e.g. brr attach aws:h100 claude).
     """
-    provider, name, explicit = _resolve_provider(cluster)
-    project_root = _project_root_for(provider, name, explicit)
+    provider, name = _resolve_provider(cluster)
+    project_root = _project_root_for(provider, name)
     cluster_name = _resolve_cluster_name(name, provider, project_root)
     host = cluster_ssh_alias(provider, cluster_name)
 
@@ -547,8 +520,8 @@ def clean(template, yes):
     config = read_config()
 
     if template:
-        provider, tpl_name, explicit = _resolve_provider(template)
-        project_root = _project_root_for(provider, tpl_name, explicit)
+        provider, tpl_name = _resolve_provider(template)
+        project_root = _project_root_for(provider, tpl_name)
         cluster_name = _resolve_cluster_name(tpl_name, provider, project_root)
         providers_to_clean = [(provider, cluster_name)]
     else:
@@ -602,17 +575,17 @@ def clean(template, yes):
 def vscode(cluster):
     """Open VS Code on a running cluster via Remote SSH.
 
-    Looks up the head node IP for CLUSTER, updates the SSH config entry,
-    and launches VS Code. Use provider:name syntax for non-AWS (e.g. nebius:cpu).
+    Looks up the head node IP for CLUSTER (provider:name, e.g. aws:h100),
+    updates the SSH config entry, and launches VS Code.
     """
     from brr.providers import get_provider
     from brr.ssh import update_ssh_config
 
     config = read_config()
 
-    provider, name, explicit = _resolve_provider(cluster)
+    provider, name = _resolve_provider(cluster)
     check_provider_configured(provider, config)
-    project_root = _project_root_for(provider, name, explicit)
+    project_root = _project_root_for(provider, name)
     cluster_name = _resolve_cluster_name(name, provider, project_root)
 
     prov = get_provider(provider)
@@ -783,17 +756,12 @@ def templates_list():
 
     if project_root:
         providers = find_project_providers(project_root)
-        multi = len(providers) > 1
         for provider in providers:
             project_tpls = find_project_templates(project_root, provider)
             if project_tpls:
-                label = f".brr/{provider}/" if multi else f".brr/{provider}/ (project)"
-                console.print(f"[bold]{label}[/bold]")
+                console.print(f"[bold].brr/{provider}/ (project)[/bold]")
                 for name in project_tpls:
-                    if multi:
-                        console.print(f"  [bold cyan]{provider}:{name}[/bold cyan]")
-                    else:
-                        console.print(f"  [bold cyan]{name}[/bold cyan]")
+                    console.print(f"  [bold cyan]{provider}:{name}[/bold cyan]")
 
     for provider in ("aws", "nebius"):
         builtin_tpls = list_templates(provider)
@@ -809,8 +777,8 @@ def show(template):
     """Show configurable arguments and rendered config for a template."""
     import yaml
 
-    provider, tpl_name, explicit = _resolve_provider(template)
-    project_root = _project_root_for(provider, tpl_name, explicit)
+    provider, tpl_name = _resolve_provider(template)
+    project_root = _project_root_for(provider, tpl_name)
 
     cfg, _ = read_merged_config(project_root)
     check_provider_configured(provider, cfg)

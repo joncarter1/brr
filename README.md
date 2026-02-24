@@ -3,8 +3,8 @@
 Opinionated research infrastructure tooling. Launch clusters, get SSH access, start building.
 
 ## Features
-- **Shared filesystem** — All nodes share `$HOME` via EFS (AWS) or virtiofs (Nebius).
-- **Coding tools** — Install Claude Code, Codex, or Gemini. Connect with e.g. `brr attach dev claude`
+- **Shared filesystem** — Nodes can share `$HOME` via EFS (AWS) or virtiofs (Nebius).
+- **Coding tools** — Install Claude Code, Codex, or Gemini. Connect with e.g. `brr attach aws:cluster claude`
 - **Autoscaling** — Ray-based cluster scaling with cached instances.
 - **Project-based workflows** — Per-repo cluster configs and project-specific dependencies.
 - **Auto-shutdown** — Monitors CPU, GPU, and SSH activity. Shuts down idle instances to save costs.
@@ -37,7 +37,7 @@ brr attach aws:l4 claude         # Claude Code on the cluster
 brr vscode aws:l4                # VS Code remote
 ```
 
-Built-in templates use `provider:name` syntax (e.g. `aws:l4`). Inside a [project](#projects), short names like `brr up dev` work automatically.
+All templates use `provider:name` syntax (e.g. `aws:l4`, `aws:dev`). Inside a [project](#projects), project templates are resolved first.
 
 Supported clouds: [AWS](#aws-setup) · [Nebius](#nebius-setup)
 
@@ -60,14 +60,16 @@ This creates:
     cluster.yaml    # CPU head + GPU workers
 ```
 
-Templates are Ray cluster YAML — edit them or add your own. Inside a project, use short names:
+Templates are Ray cluster YAML — edit them or add your own. Inside a project:
 
 ```sh
-brr up dev              # launches .brr/aws/dev.yaml
-brr up cluster          # launches .brr/aws/cluster.yaml
-brr attach dev          # SSH into dev cluster
-brr down dev            # tear down
+brr up aws:dev          # launches .brr/aws/dev.yaml
+brr up aws:cluster      # launches .brr/aws/cluster.yaml
+brr attach aws:dev      # SSH into dev cluster
+brr down aws:dev        # tear down
 ```
+
+On first deploy, `brr up` clones the project repo to `~/code/{repo}/` on the head node.
 
 If your project uses `uv`, `brr init` automatically adds `brr-cli` and `ray` to a `brr` dependency group. The cluster uses your project-locked versions — no manual setup needed.
 
@@ -96,24 +98,24 @@ Override template values inline:
 ```sh
 brr up aws:cpu instance_type=t3.xlarge max_workers=4
 brr up aws:l4 spot=true
-brr up dev region=us-west-2
+brr up aws:dev region=us-west-2
 ```
 
 Preview the rendered config without launching:
 
 ```sh
-brr up dev --dry-run
+brr up aws:dev --dry-run
 ```
 
 See available overrides for a template:
 
 ```sh
-brr templates show dev
+brr templates show aws:dev
 ```
 
 ### Multi-provider
 
-Use the provider prefix for built-in templates:
+Both providers can run simultaneously:
 
 ```sh
 brr up aws:l4
@@ -121,8 +123,6 @@ brr up nebius:h100
 brr attach nebius:h100
 brr down nebius:h100
 ```
-
-Both providers can run simultaneously. For projects with multiple providers, use the prefix: `brr up aws:dev`.
 
 ## Customization
 
@@ -157,8 +157,8 @@ brr configure tools    # select Claude Code, Codex, and/or Gemini CLI
 Then connect and start coding:
 
 ```sh
-brr up dev
-brr attach dev claude
+brr up aws:dev
+brr attach aws:dev claude
 ```
 
 ### Dotfiles
@@ -214,7 +214,7 @@ AWS nodes are cached (stopped) by default.
 
 | Command | Description |
 | :--- | :--- |
-| `brr up TEMPLATE [OVERRIDES...]` | Launch or update a cluster (`aws:l4`, `dev`, or `path.yaml`) |
+| `brr up TEMPLATE [OVERRIDES...]` | Launch or update a cluster (`aws:l4`, `aws:dev`, or `path.yaml`) |
 | `brr up TEMPLATE --dry-run` | Preview rendered config without launching |
 | `brr down TEMPLATE` | Stop a cluster (instances preserved for fast restart) |
 | `brr down TEMPLATE --delete` | Terminate all instances and remove staging files |

@@ -56,7 +56,7 @@ def init_cmd():
 
     Both share the same EFS/Nebius filesystem, so ~/code/ is synced.
 
-    Then run `brr up dev` to launch a cluster and sync your code.
+    Then run `brr up aws:dev` to launch a cluster and sync your code.
     """
     # Check that at least one provider is configured
     configured = [p for p in PROVIDERS if is_provider_configured(p)]
@@ -179,7 +179,8 @@ source "/tmp/brr/venv/bin/activate"
         click.echo(f"\n  .brr/setup.sh             Project deps (runs after global setup)")
 
     click.echo(f"\nTemplates are standard Ray YAML — edit them or add your own.")
+    p = providers[0]
     click.echo(f"\nLaunch:")
-    click.echo(f"  brr up dev            # start dev machine")
-    click.echo(f"  brr up cluster        # start full cluster")
-    click.echo(f"  brr up dev --dry-run  # preview config")
+    click.echo(f"  brr up {p}:dev            # start dev machine")
+    click.echo(f"  brr up {p}:cluster        # start full cluster")
+    click.echo(f"  brr up {p}:dev --dry-run  # preview config")

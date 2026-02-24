@@ -63,7 +63,7 @@ fi
 if [ "${PROVIDER:-aws}" = "aws" ] && [ -n "${EFS_ID:-}" ]; then
   REGION="${AWS_REGION:-$(curl -s http://169.254.169.254/latest/meta-data/placement/region)}"
   EFS_DNS="${EFS_ID}.efs.${REGION}.amazonaws.com"
-  MOUNT_POINT="/efs"
+  MOUNT_POINT="/shared"
 
   if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
     info "EFS already mounted at $MOUNT_POINT"
@@ -167,6 +167,40 @@ if [ "${PROVIDER:-}" = "nebius" ] && [ -n "${NEBIUS_FILESYSTEM_ID:-}" ]; then
     ln -sfn /tmp/ray_bootstrap_config.yaml "$HOME/ray_bootstrap_config.yaml"
   fi
 fi
+
+# --- Ensure-mount helper (handles cached node restarts) ---
+# When Ray restarts a cached stopped node, it skips setup_commands and runs
+# worker_start_ray_commands directly. The NFS/virtiofs mount comes back via
+# fstab, but the home bind-mount does not. This helper waits for the fstab
+# mount and re-establishes the bind-mount so $HOME/code/ is available.
+sudo tee /usr/local/bin/brr-ensure-mount >/dev/null <<'ENSURE_MOUNT'
+#!/bin/bash
+[ -f /tmp/brr/config.env ] && source /tmp/brr/config.env
+
+# Exit early if no shared filesystem configured
+[ -z "${EFS_ID:-}" ] && [ -z "${NEBIUS_FILESYSTEM_ID:-}" ] && exit 0
+
+MOUNT_POINT="/shared"
+
+# Wait for the fstab mount (NFS/virtiofs) to complete
+for i in $(seq 1 60); do
+  mountpoint -q "$MOUNT_POINT" 2>/dev/null && break
+  echo "[brr-ensure-mount] Waiting for $MOUNT_POINT ($i/60)..."
+  sleep 5
+done
+
+if ! mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
+  echo "[brr-ensure-mount] ERROR: $MOUNT_POINT not mounted after 5 minutes"
+  exit 1
+fi
+
+# Re-establish home bind-mount if needed
+if ! mountpoint -q "$HOME" 2>/dev/null; then
+  sudo mount --bind "$MOUNT_POINT/home/ubuntu" "$HOME"
+  echo "[brr-ensure-mount] Home bind-mounted from $MOUNT_POINT"
+fi
+ENSURE_MOUNT
+sudo chmod +x /usr/local/bin/brr-ensure-mount
 
 # --- AWS CLI ---
 if [ "${PROVIDER:-aws}" = "aws" ]; then

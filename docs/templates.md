@@ -14,7 +14,7 @@ brr cluster templates are [Ray cluster YAML files](https://docs.ray.io/en/latest
 | `h100` | Nebius | 1gpu-16vcpu-200gb | - | 1x H100 |
 | `cpu-h100s` | Nebius | 8vcpu-32gb | 8gpu-128vcpu-1600gb (max 4) | 8x H100 |
 
-Use them directly (`brr up l4`) or as the basis for project templates (`brr init`).
+Use them directly (`brr up aws:l4`) or as the basis for project templates (`brr init`).
 
 ## Template resolution
 
@@ -72,7 +72,7 @@ On every node boot, scripts run in this order:
 Override any field from the command line:
 
 ```
-brr up dev instance_type=g6.2xlarge max_workers=8 spot=true
+brr up aws:dev instance_type=g6.2xlarge max_workers=8 spot=true
 ```
 
 ### Global override names
@@ -94,7 +94,7 @@ These are shorthand names that work with any template:
 For fields without a shorthand, use dot-notation paths:
 
 ```
-brr up dev available_node_types.ray.worker.default.node_config.InstanceType=g6.12xlarge
+brr up aws:dev available_node_types.ray.worker.default.node_config.InstanceType=g6.12xlarge
 ```
 
 ### Template aliases (`_brr` section)
@@ -110,7 +110,7 @@ cluster_name: my-cluster
 # ... rest of template
 ```
 
-Then use them: `brr up dev worker_type=g6.12xlarge disk=500`
+Then use them: `brr up aws:dev worker_type=g6.12xlarge disk=500`
 
 The `_brr` section is stripped from the final YAML before passing to Ray.
 

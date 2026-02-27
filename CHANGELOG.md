@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+
+### Fixed
+
+- Autoscaling broken when multiple clusters share the same filesystem — `ray_bootstrap_config.yaml` on the shared home directory caused cross-cluster config contamination. Autoscaler now reads from instance-local `/tmp/ray_bootstrap_config.yaml`.
+- Rich markup not escaped in ray command output.
+
 ## 0.6.0
 
 ### Changed

@@ -152,19 +152,22 @@ def _project_root_for(provider, tpl_name):
     return project_root
 
 
-def _ray_cmd(project_root=None):
+_CLOUD_SDK = {"aws": "boto3", "nebius": "nebius"}
+
+
+def _ray_cmd(provider="aws"):
     """Return the command prefix for invoking ray.
 
-    If project_root is a uv project (has pyproject.toml + uv.lock), returns
-    ["uv", "run", "--group", "brr", "ray"] so the project-locked ray is used.
-    Otherwise finds the ray binary from the current venv or PATH.
+    Inside a uv project, uses ``uv run --with`` to inject ray and the cloud
+    SDK into the project environment.  Otherwise finds the ray binary from
+    the current venv or PATH.
     """
-    from pathlib import Path
-
+    project_root = find_project_root()
     if project_root:
         pr = Path(project_root)
         if (pr / "pyproject.toml").exists() and (pr / "uv.lock").exists():
-            return ["uv", "run", "--group", "brr", "ray"]
+            sdk = _CLOUD_SDK.get(provider, "boto3")
+            return ["uv", "run", "--with", "ray[default]", "--with", sdk, "ray"]
 
     venv_ray = Path(sys.executable).parent / "ray"
     if venv_ray.is_file():
@@ -175,13 +178,13 @@ def _ray_cmd(project_root=None):
         return [on_path]
 
     console.print("[red]Ray is not installed.[/red]")
-    console.print("Install it with: [bold]pip install brr[/bold]")
+    console.print("Install it with: [bold]uv tool install brr-cli[/bold]")
     raise SystemExit(1)
 
 
-def _run_ray(args, project_root=None):
+def _run_ray(args, provider="aws"):
     """Run a ray CLI command, passing through stdout/stderr."""
-    cmd = _ray_cmd(project_root) + args
+    cmd = _ray_cmd(provider) + args
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
     result = subprocess.run(cmd)
     if result.returncode != 0:
@@ -378,7 +381,7 @@ def up(template, overrides, no_config_cache, yes, dry_run):
     if yes:
         ray_args.append("-y")
 
-    cmd = _ray_cmd(project_root) + ray_args
+    cmd = _ray_cmd(provider) + ray_args
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
     ray_result = subprocess.run(cmd)
 
@@ -429,7 +432,7 @@ def down(template, yes, delete):
         ray_args = ["down", yaml_path]
         if yes or delete:
             ray_args.append("-y")
-        _run_ray(ray_args, project_root=project_root)
+        _run_ray(ray_args, provider=provider)
     elif delete:
         console.print(f"[yellow]No rendered YAML at {yaml_path}, skipping ray down.[/yellow]")
     else:

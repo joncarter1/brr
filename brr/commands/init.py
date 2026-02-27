@@ -24,6 +24,12 @@ _TEMPLATE_MAP = {
     },
 }
 
+# Cloud SDK needed on cluster nodes per provider (for Ray's autoscaler).
+_CLOUD_SDK = {
+    "aws": "boto3",
+    "nebius": "nebius",
+}
+
 
 def _find_repo_root():
     """Find the git repo root from CWD, or fall back to CWD."""
@@ -120,23 +126,13 @@ def init_cmd():
             )
             if is_uv_project:
                 project_dir = f"$HOME/code/{repo_name}"
+                cloud_sdk = _CLOUD_SDK[provider]
                 content = content.replace(
                     "source /tmp/brr/venv/bin/activate && ",
-                    f"cd {project_dir} && uv run --group brr ",
+                    f"cd {project_dir} && uv run --with 'ray[default]' --with {cloud_sdk} ",
                 )
             dest = provider_dir / f"{project_name}.yaml"
             dest.write_text(content)
-
-        if is_uv_project:
-            extra = f"brr-cli[{provider}]"
-            click.echo(
-                f"\nDetected uv project — adding {extra} and ray[default] to brr dependency group..."
-            )
-            subprocess.run(
-                ["uv", "add", "--group", "brr", extra, "ray[default]"],
-                cwd=str(project_root),
-                check=False,
-            )
 
         click.echo(f"\nInitialized {provider} project in .brr/{provider}/")
         click.echo(f"  .brr/{provider}/dev.yaml      Single GPU ({repo_name}-dev)")
@@ -156,7 +152,7 @@ set -Eeuo pipefail
 # Sync project dependencies (uses locked versions from uv.lock)
 if [ -d "$HOME/code/{repo_name}" ]; then
   cd "$HOME/code/{repo_name}"
-  uv sync --group brr
+  uv sync
 fi
 
 # Add extra project-specific dependencies below:

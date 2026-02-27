@@ -42,7 +42,7 @@ def _run_provider_wizard(provider):
     except ImportError:
         raise click.ClickException(
             f"Missing dependencies for {provider}.\n"
-            f"  Install with: uv tool install 'brr-cli[{provider}]'"
+            f"  Install with: uv tool install brr-cli"
         )
 
     if provider == "aws":

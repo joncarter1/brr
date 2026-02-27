@@ -17,11 +17,8 @@ Opinionated research infrastructure tooling. Launch clusters, get SSH access, st
 ## Quick Start
 
 ```sh
-# Install (AWS only)
-uv tool install brr-cli[aws]
-
-# Install (both providers)
-# uv tool install brr-cli[aws,nebius]
+# Install
+uv tool install brr-cli
 
 # Configure (interactive wizard)
 brr configure      # or: brr configure nebius
@@ -71,7 +68,7 @@ brr down aws:dev        # tear down
 
 On first deploy, `brr up` clones the project repo to `~/code/{repo}/` on the head node.
 
-If your project uses `uv`, `brr init` automatically adds `brr-cli` and `ray` to a `brr` dependency group. The cluster uses your project-locked versions — no manual setup needed.
+If your project uses `uv`, `brr init` generates templates that use `uv run --with 'ray[default]' --with boto3` to inject cluster dependencies at runtime — no changes to your project's `pyproject.toml`.
 
 All global config lives in `~/.brr/config.env`.
 
@@ -144,7 +141,7 @@ brr wraps the `uv` binary to route virtual environments away from the shared EFS
 
 The wrapper lives at `~/.local/bin/uv` and delegates to the real binary at `~/.local/lib/uv`. Both persist on EFS so new instances reuse them without reinstalling. Only caches, Python builds, and venvs are per-instance (rebuilt on boot from lockfiles).
 
-For uv-managed projects, Ray runs inside the project venv via `uv run --group brr ray start`. For non-uv clusters, Ray runs from a standalone venv at `/tmp/brr/venv`.
+For uv-managed projects, Ray runs via `uv run --with 'ray[default]' --with boto3 ray start`, injecting cluster deps at runtime without modifying the project. For non-uv clusters, Ray runs from a standalone venv at `/tmp/brr/venv`.
 
 ### AI coding tools
 

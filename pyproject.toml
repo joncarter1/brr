@@ -14,11 +14,7 @@ classifiers = [
     "Topic :: System :: Clustering",
     "Programming Language :: Python :: 3",
 ]
-dependencies = ["click", "pyyaml", "rich", "InquirerPy"]
-
-[project.optional-dependencies]
-aws = ["boto3", "ray[default]"]
-nebius = ["nebius", "ray[default]"]
+dependencies = ["click", "pyyaml", "rich", "InquirerPy", "boto3", "nebius", "ray[default]"]
 
 [project.urls]
 Homepage = "https://github.com/joncarter1/brr"
@@ -31,18 +27,11 @@ brr = "brr.cli:cli"
 [tool.hatch.build.targets.wheel]
 packages = ["brr"]
 
-[tool.uv.sources]
-brr-cli = { workspace = true }
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
-brr = [
-    "brr-cli[aws]",
-    "ray[default]>=2.53.0",
-]
 dev = [
     "pytest>=9.0.2",
 ]

@@ -47,7 +47,7 @@ available_node_types:
 
 # Commands run on all nodes after brr's setup.sh (and project setup.sh if present).
 # setup_commands:
-#   - pip install my-package
+#   - echo "extra setup here"
 
 # Commands run only on the head node after setup_commands.
 # head_setup_commands:
@@ -57,6 +57,7 @@ available_node_types:
 # worker_setup_commands:
 #   - echo "worker ready"
 
+# WARNING: You probably don't need to modify the start_ray_commands below.
 head_start_ray_commands:
     - source /tmp/brr/venv/bin/activate && ray stop
     - source /tmp/brr/venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0

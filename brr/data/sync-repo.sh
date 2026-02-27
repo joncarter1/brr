@@ -30,8 +30,8 @@ git reset --hard "$COMMIT"
 
 # Sync uv project environment if applicable
 if [ -f "$PROJECT_DIR/pyproject.toml" ] && [ -f "$PROJECT_DIR/uv.lock" ]; then
-    echo "[sync-repo] Syncing uv project environment (brr group)"
-    uv sync --group brr
+    echo "[sync-repo] Syncing uv project environment"
+    uv sync
 fi
 
 echo "[sync-repo] Done: $(git log --oneline -1)"

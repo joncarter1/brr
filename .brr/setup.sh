@@ -5,8 +5,5 @@ set -Eeuo pipefail
 # Sync project dependencies (uses locked versions from uv.lock)
 if [ -d "$HOME/code/brr" ]; then
   cd "$HOME/code/brr"
-  uv sync --group brr
+  uv sync
 fi
-
-# Add extra project-specific dependencies below:
-# uv pip install torch

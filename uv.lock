@@ -191,52 +191,35 @@ wheels = [
 
 [[package]]
 name = "brr-cli"
-version = "0.3.0"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
+    { name = "boto3" },
     { name = "click" },
     { name = "inquirerpy" },
+    { name = "nebius" },
     { name = "pyyaml" },
+    { name = "ray", extra = ["default"] },
     { name = "rich" },
 ]
 
-[package.optional-dependencies]
-aws = [
-    { name = "boto3" },
-    { name = "ray", extra = ["default"] },
-]
-nebius = [
-    { name = "nebius" },
-    { name = "ray", extra = ["default"] },
-]
-
 [package.dev-dependencies]
-brr = [
-    { name = "brr-cli", extra = ["aws"] },
-    { name = "ray", extra = ["default"] },
-]
 dev = [
     { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "boto3", marker = "extra == 'aws'" },
+    { name = "boto3" },
     { name = "click" },
     { name = "inquirerpy" },
-    { name = "nebius", marker = "extra == 'nebius'" },
+    { name = "nebius" },
     { name = "pyyaml" },
-    { name = "ray", extras = ["default"], marker = "extra == 'aws'" },
-    { name = "ray", extras = ["default"], marker = "extra == 'nebius'" },
+    { name = "ray", extras = ["default"] },
     { name = "rich" },
 ]
-provides-extras = ["aws", "nebius"]
 
 [package.metadata.requires-dev]
-brr = [
-    { name = "brr-cli", extras = ["aws"], editable = "." },
-    { name = "ray", extras = ["default"], specifier = ">=2.53.0" },
-]
 dev = [{ name = "pytest", specifier = ">=9.0.2" }]
 
 [[package]]

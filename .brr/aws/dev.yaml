@@ -1,3 +1,11 @@
+# brr AWS template — single L4 GPU node
+# Based on Ray cluster YAML: https://docs.ray.io/en/latest/cluster/vms/references/ray-cluster-configuration.html
+#
+# {{VAR}} placeholders are filled from ~/.brr/config.env (set by `brr configure`).
+# brr auto-injects setup.sh, file_mounts, and project setup into the final YAML.
+# Add setup_commands to run your own commands after brr setup completes.
+# Override fields via CLI: brr up aws:l4 instance_type=g6.2xlarge spot=true
+
 cluster_name: brr-dev
 max_workers: 0
 
@@ -27,10 +35,27 @@ available_node_types:
             VolumeSize: 200
             VolumeType: gp3
 
+# Upload local files/dirs to all nodes (merged with brr's own file_mounts).
+# file_mounts:
+#   /remote/path: /local/path
+
+# Commands run on all nodes after brr's setup.sh (and project setup.sh if present).
+# setup_commands:
+#   - echo "extra setup here"
+
+# Commands run only on the head node after setup_commands.
+# head_setup_commands:
+#   - echo "head node ready"
+
+# Commands run only on worker nodes after setup_commands.
+# worker_setup_commands:
+#   - echo "worker ready"
+
+# WARNING: You probably don't need to modify the start_ray_commands below.
 head_start_ray_commands:
-    - cd $HOME/code/brr && uv run --group brr ray stop
-    - cd $HOME/code/brr && uv run --group brr ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
+    - cd $HOME/code/brr && uv run --with 'ray[default]' --with boto3 ray stop
+    - cd $HOME/code/brr && uv run --with 'ray[default]' --with boto3 ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
 
 worker_start_ray_commands:
-    - cd $HOME/code/brr && uv run --group brr ray stop
-    - cd $HOME/code/brr && uv run --group brr ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076
+    - cd $HOME/code/brr && uv run --with 'ray[default]' --with boto3 ray stop
+    - cd $HOME/code/brr && uv run --with 'ray[default]' --with boto3 ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+### Changed
+
+- boto3, nebius, and ray[default] are now core dependencies — install with `uv tool install brr-cli` (no extras needed).
+- Removed `[project.optional-dependencies]` (aws/nebius extras).
+- `brr up` now uses `uv run --with` to inject ray and cloud SDK when running inside a uv project.
+
 ## 0.5.0
 
 ### Fixed

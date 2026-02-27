@@ -430,6 +430,14 @@ def inject_brr_infra(config, staging, git_info=None):
                     nc = nt.get("node_config", {})
                     nc.setdefault("ssh_public_key", pub_key_content)
 
+    # Rewrite autoscaling-config to instance-local path so clusters sharing
+    # the same home directory via EFS/virtiofs don't clobber each other's
+    # ray_bootstrap_config.yaml.
+    for i, cmd in enumerate(config.get("head_start_ray_commands", [])):
+        config["head_start_ray_commands"][i] = cmd.replace(
+            "~/ray_bootstrap_config.yaml", "/tmp/ray_bootstrap_config.yaml"
+        )
+
     # Project repo sync: write git metadata to staging, clone via setup_command.
     if git_info is not None:
         import json

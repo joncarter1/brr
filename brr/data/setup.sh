@@ -114,13 +114,6 @@ if [ "${PROVIDER:-aws}" = "aws" ] && [ -n "${EFS_ID:-}" ]; then
 
   # Persistent code directory
   mkdir -p "$HOME/code"
-
-  # Redirect ray_bootstrap_config.yaml to instance-local storage
-  # (Ray hardcodes this to ~/, can't relocate)
-  if [ ! -L "$HOME/ray_bootstrap_config.yaml" ]; then
-    rm -f "$HOME/ray_bootstrap_config.yaml"
-    ln -sfn /tmp/ray_bootstrap_config.yaml "$HOME/ray_bootstrap_config.yaml"
-  fi
 fi
 
 # --- Shared filesystem mount (Nebius virtiofs) ---
@@ -160,12 +153,6 @@ if [ "${PROVIDER:-}" = "nebius" ] && [ -n "${NEBIUS_FILESYSTEM_ID:-}" ]; then
 
   # Persistent code directory
   mkdir -p "$HOME/code"
-
-  # Redirect ray_bootstrap_config.yaml to instance-local storage
-  if [ ! -L "$HOME/ray_bootstrap_config.yaml" ]; then
-    rm -f "$HOME/ray_bootstrap_config.yaml"
-    ln -sfn /tmp/ray_bootstrap_config.yaml "$HOME/ray_bootstrap_config.yaml"
-  fi
 fi
 
 # --- Ensure-mount helper (handles cached node restarts) ---

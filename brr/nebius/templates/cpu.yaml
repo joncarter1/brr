@@ -71,7 +71,7 @@ available_node_types:
 # WARNING: You probably don't need to modify the start_ray_commands below.
 head_start_ray_commands:
     - source /tmp/brr/venv/bin/activate && ray stop
-    - source /tmp/brr/venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
+    - source /tmp/brr/venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=/tmp/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
 
 worker_start_ray_commands:
     - source /tmp/brr/venv/bin/activate && ray stop

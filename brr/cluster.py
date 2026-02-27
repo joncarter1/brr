@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from brr.state import (
@@ -185,7 +186,7 @@ def _ray_cmd(provider="aws"):
 def _run_ray(args, provider="aws"):
     """Run a ray CLI command, passing through stdout/stderr."""
     cmd = _ray_cmd(provider) + args
-    console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+    console.print(f"[dim]$ {escape(' '.join(cmd))}[/dim]")
     result = subprocess.run(cmd)
     if result.returncode != 0:
         sys.exit(result.returncode)
@@ -382,7 +383,7 @@ def up(template, overrides, no_config_cache, yes, dry_run):
         ray_args.append("-y")
 
     cmd = _ray_cmd(provider) + ray_args
-    console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+    console.print(f"[dim]$ {escape(' '.join(cmd))}[/dim]")
     ray_result = subprocess.run(cmd)
 
     # Post-ray: sync SSH config even if ray up had warnings (non-zero exit)

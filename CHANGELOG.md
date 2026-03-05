@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1
+
+### Fixed
+
+- Add `IamInstanceProfile` (`ray-autoscaler-v1`) to all AWS template node configs so instances get the correct IAM role.
+
 ## 0.8.0
 
 ### Changed

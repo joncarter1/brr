@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.2
+
+### Fixed
+
+- Specify explicit CPU/GPU resources in all AWS Ray YAML templates instead of relying on auto-discovery.
+- Default `cache_stopped_nodes` to `False` in all AWS templates to avoid bugs with cached stopped instances.
+
 ## 0.8.1
 
 ### Fixed

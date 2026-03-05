@@ -13,7 +13,7 @@ provider:
   type: aws
   region: us-east-1
   availability_zone: us-east-1a, us-east-1b, us-east-1c, us-east-1d
-  cache_stopped_nodes: True # If not present, the default is True.
+  cache_stopped_nodes: False
 
 auth:
   ssh_user: ubuntu
@@ -23,7 +23,9 @@ head_node_type: ray.head.default
 
 available_node_types:
   ray.head.default:
-    resources: {}
+    resources:
+      CPU: 16
+      GPU: 1
     node_config:
       InstanceType: gr6.4xlarge # L4 GPU https://aws.amazon.com/ec2/instance-types/g6/
       ImageId: {{AMI_DL}}

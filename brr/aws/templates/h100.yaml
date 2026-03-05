@@ -12,7 +12,7 @@ max_workers: 0
 provider:
   type: aws
   region: us-east-1
-  cache_stopped_nodes: True
+  cache_stopped_nodes: False
 
 auth:
   ssh_user: ubuntu
@@ -22,7 +22,9 @@ head_node_type: ray.head.default
 
 available_node_types:
   ray.head.default:
-    resources: {}
+    resources:
+      CPU: 16
+      GPU: 1
     node_config:
       InstanceType: p5.4xlarge
       ImageId: {{AMI_DL}}

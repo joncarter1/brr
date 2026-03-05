@@ -13,7 +13,7 @@ provider:
   type: aws
   region: us-east-1
   availability_zone: us-east-1a, us-east-1b, us-east-1c, us-east-1d
-  cache_stopped_nodes: True
+  cache_stopped_nodes: False
 
 auth:
   ssh_user: ubuntu
@@ -23,7 +23,8 @@ head_node_type: ray.head.default
 
 available_node_types:
   ray.head.default:
-    resources: {}
+    resources:
+      CPU: 8
     node_config:
       InstanceType: t3.2xlarge
       ImageId: {{AMI_UBUNTU}}
@@ -39,7 +40,9 @@ available_node_types:
   ray.worker.default:
     min_workers: 0
     max_workers: 4
-    resources: {}
+    resources:
+      CPU: 16
+      GPU: 1
     node_config:
       InstanceType: g6.4xlarge
       ImageId: {{AMI_DL}}

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0
+
+### Changed
+
+- `brr up` and `brr init` no longer inject `ray[default]` and cloud SDKs via `--with` — projects must add them as dependencies (e.g. `uv add 'ray[default]' boto3`).
+- `brr init` prints `uv add` instructions after scaffolding.
+- `brr up` shows a helpful error if ray is missing from project dependencies.
+
 ## 0.7.0
 
 ### Fixed

@@ -53,9 +53,9 @@ available_node_types:
 
 # WARNING: You probably don't need to modify the start_ray_commands below.
 head_start_ray_commands:
-    - cd $HOME/code/brr && uv run --with 'ray[default]' --with boto3 ray stop
-    - cd $HOME/code/brr && uv run --with 'ray[default]' --with boto3 ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=~/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
+    - cd $HOME/code/brr && uv run ray stop
+    - cd $HOME/code/brr && uv run ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=/tmp/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
 
 worker_start_ray_commands:
-    - cd $HOME/code/brr && uv run --with 'ray[default]' --with boto3 ray stop
-    - cd $HOME/code/brr && uv run --with 'ray[default]' --with boto3 ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076
+    - cd $HOME/code/brr && uv run ray stop
+    - cd $HOME/code/brr && uv run ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076

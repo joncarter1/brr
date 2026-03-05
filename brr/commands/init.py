@@ -24,11 +24,6 @@ _TEMPLATE_MAP = {
     },
 }
 
-# Cloud SDK needed on cluster nodes per provider (for Ray's autoscaler).
-_CLOUD_SDK = {
-    "aws": "boto3",
-    "nebius": "nebius",
-}
 
 
 def _find_repo_root():
@@ -126,10 +121,9 @@ def init_cmd():
             )
             if is_uv_project:
                 project_dir = f"$HOME/code/{repo_name}"
-                cloud_sdk = _CLOUD_SDK[provider]
                 content = content.replace(
                     "source /tmp/brr/venv/bin/activate && ",
-                    f"cd {project_dir} && uv run --with 'ray[default]' --with {cloud_sdk} ",
+                    f"cd {project_dir} && uv run ",
                 )
             dest = provider_dir / f"{project_name}.yaml"
             dest.write_text(content)
@@ -175,6 +169,12 @@ source "/tmp/brr/venv/bin/activate"
         click.echo(f"\n  .brr/setup.sh             Project deps (runs after global setup)")
 
     click.echo(f"\nTemplates are standard Ray YAML — edit them or add your own.")
+
+    if is_uv_project:
+        sdks = sorted({("boto3" if p == "aws" else p) for p in providers})
+        click.echo(f"\nAdd cluster dependencies:")
+        click.echo(f"  uv add 'ray[default]' {' '.join(sdks)}")
+
     p = providers[0]
     click.echo(f"\nLaunch:")
     click.echo(f"  brr up {p}:dev            # start dev machine")

@@ -68,7 +68,7 @@ brr down aws:dev        # tear down
 
 On first deploy, `brr up` clones the project repo to `~/code/{repo}/` on the head node.
 
-If your project uses `uv`, `brr init` generates templates that use `uv run --with 'ray[default]' --with boto3` to inject cluster dependencies at runtime — no changes to your project's `pyproject.toml`.
+If your project uses `uv`, `brr init` generates templates that use `uv run ray start` from your project directory. Add cluster dependencies to your project first: `uv add 'ray[default]' boto3`.
 
 All global config lives in `~/.brr/config.env`.
 
@@ -141,7 +141,7 @@ brr wraps the `uv` binary to route virtual environments away from the shared EFS
 
 The wrapper lives at `~/.local/bin/uv` and delegates to the real binary at `~/.local/lib/uv`. Both persist on EFS so new instances reuse them without reinstalling. Only caches, Python builds, and venvs are per-instance (rebuilt on boot from lockfiles).
 
-For uv-managed projects, Ray runs via `uv run --with 'ray[default]' --with boto3 ray start`, injecting cluster deps at runtime without modifying the project. For non-uv clusters, Ray runs from a standalone venv at `/tmp/brr/venv`.
+For uv-managed projects, Ray runs via `uv run ray start` from the project directory — add `ray[default]` and your cloud SDK (e.g. `boto3`) to your project's dependencies. For non-uv clusters, Ray runs from a standalone venv at `/tmp/brr/venv`.
 
 ### AI coding tools
 

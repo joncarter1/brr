@@ -153,22 +153,30 @@ def _project_root_for(provider, tpl_name):
     return project_root
 
 
-_CLOUD_SDK = {"aws": "boto3", "nebius": "nebius"}
-
-
 def _ray_cmd(provider="aws"):
     """Return the command prefix for invoking ray.
 
-    Inside a uv project, uses ``uv run --with`` to inject ray and the cloud
-    SDK into the project environment.  Otherwise finds the ray binary from
-    the current venv or PATH.
+    Inside a uv project, uses ``uv run ray``.  Otherwise finds the ray
+    binary from the current venv or PATH.
     """
     project_root = find_project_root()
     if project_root:
         pr = Path(project_root)
         if (pr / "pyproject.toml").exists() and (pr / "uv.lock").exists():
-            sdk = _CLOUD_SDK.get(provider, "boto3")
-            return ["uv", "run", "--with", "ray[default]", "--with", sdk, "ray"]
+            # Check that ray is actually available in the project
+            result = subprocess.run(
+                ["uv", "run", "python", "-c", "import ray"],
+                cwd=pr, capture_output=True,
+            )
+            if result.returncode != 0:
+                sdk = "boto3" if provider == "aws" else provider
+                console.print(
+                    f"[red]Ray is not installed in your project.[/red]\n"
+                    f"Add cluster dependencies with:\n"
+                    f"  [bold]uv add 'ray[default]' {sdk}[/bold]"
+                )
+                raise SystemExit(1)
+            return ["uv", "run", "ray"]
 
     venv_ray = Path(sys.executable).parent / "ray"
     if venv_ray.is_file():

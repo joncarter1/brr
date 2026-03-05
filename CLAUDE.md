@@ -49,7 +49,7 @@ Key behaviors:
 - `state.py:find_project_root()` walks up from CWD looking for `.brr/` with YAML files (skips `~/.brr`).
 - `resolve_project_provider()` infers provider from project: single provider → automatic; multiple → requires explicit prefix.
 - Setup layering: built-in global `setup.sh` runs first, then project `.brr/setup.sh`.
-- uv-managed projects: `brr init` writes `uv run --with 'ray[default]' --with boto3 ray start` into project template YAML. No project dependency changes needed.
+- uv-managed projects: `brr init` writes `uv run ray start` into project template YAML. Projects must add `ray[default]` and their cloud SDK (e.g. `boto3`) as dependencies.
 
 ### Key Modules
 

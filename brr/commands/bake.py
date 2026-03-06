@@ -88,6 +88,7 @@ def _run_remote(ip, key_path, command):
 _BAKE_STRIP_KEYS = {
     "GITHUB_SSH_KEY",
     "EFS_ID", "NEBIUS_FILESYSTEM_ID",
+    "NEBIUS_S3_ACCESS_KEY_ID", "NEBIUS_S3_SECRET_KEY",
     "DOTFILES_REPO",
 }
 

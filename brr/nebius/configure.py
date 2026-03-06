@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import stat
@@ -18,13 +19,15 @@ console = Console()
 
 NEBIUS_CREDS_PATH = Path.home() / ".nebius" / "credentials.json"
 
-DEFAULTS = {
-    "NEBIUS_FILESYSTEM_ID": "",
-}
+_cached_sdk = None
 
 
 def _check_credentials():
-    """Verify Nebius credentials exist."""
+    """Verify Nebius credentials exist (CLI profile or credentials file)."""
+    cli_config = Path.home() / ".nebius" / "config.yaml"
+    if cli_config.exists():
+        console.print(f"Nebius CLI profile: [green]{cli_config}[/green]")
+        return True
     if NEBIUS_CREDS_PATH.exists():
         console.print(f"Nebius credentials: [green]{NEBIUS_CREDS_PATH}[/green]")
         return True
@@ -33,19 +36,57 @@ def _check_credentials():
         return True
 
     console.print("[red]No Nebius credentials found[/red]")
-    console.print(f"  Expected: {NEBIUS_CREDS_PATH}")
-    console.print("  Create a service account key at https://console.nebius.com/")
-    console.print("  Then save it as ~/.nebius/credentials.json")
+    console.print("  Run [bold]nebius auth login[/bold] to authenticate")
     return False
 
 
 def _nebius_sdk():
-    """Create a Nebius SDK instance with credentials discovery."""
+    """Return a cached Nebius SDK for the configure wizard.
+
+    Tries (in order):
+    1. CLI access token via `nebius iam get-access-token` (personal credentials)
+    2. CLI profile via Config() (needs federation-id in profile)
+    3. credentials.json (service account key — limited IAM permissions)
+    """
+    global _cached_sdk
+    if _cached_sdk is not None:
+        return _cached_sdk
+
     from nebius.sdk import SDK
 
+    # Try getting an access token from the CLI — works regardless of profile format
+    try:
+        result = subprocess.run(
+            ["nebius", "iam", "get-access-token"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            _cached_sdk = SDK(credentials=result.stdout.strip())
+            return _cached_sdk
+    except Exception:
+        pass
+
+    try:
+        from nebius.aio.cli_config import Config
+        _cached_sdk = SDK(config_reader=Config())
+        return _cached_sdk
+    except Exception:
+        pass
+
     if NEBIUS_CREDS_PATH.exists():
-        return SDK(credentials_file_name=str(NEBIUS_CREDS_PATH))
-    return SDK()
+        Console(stderr=True).print(
+            "[yellow]Warning:[/yellow] Using service account credentials.\n"
+            "  IAM operations (permissions, keys) may fail — SA credentials lack IAM admin access.\n"
+            "  Install the Nebius CLI and authenticate for full access."
+        )
+        _cached_sdk = SDK(credentials_file_name=str(NEBIUS_CREDS_PATH))
+        return _cached_sdk
+
+    Console(stderr=True).print(
+        "[yellow]Warning:[/yellow] No Nebius credentials found. API calls will likely fail."
+    )
+    _cached_sdk = SDK()
+    return _cached_sdk
 
 
 def _list_subnets(project_id):
@@ -56,17 +97,16 @@ def _list_subnets(project_id):
 
         async def _list():
             sdk = _nebius_sdk()
-            async with sdk:
-                client = SubnetServiceClient(sdk)
-                resp = await client.list(ListSubnetsRequest(parent_id=project_id))
-                subnets = []
-                for s in resp.items:
-                    name = s.metadata.name if s.metadata.name else "(unnamed)"
-                    zone = ""
-                    if hasattr(s.spec, "zone"):
-                        zone = s.spec.zone
-                    subnets.append((s.metadata.id, name, zone))
-                return subnets
+            client = SubnetServiceClient(sdk)
+            resp = await client.list(ListSubnetsRequest(parent_id=project_id))
+            subnets = []
+            for s in resp.items:
+                name = s.metadata.name if s.metadata.name else "(unnamed)"
+                zone = ""
+                if hasattr(s.spec, "zone"):
+                    zone = s.spec.zone
+                subnets.append((s.metadata.id, name, zone))
+            return subnets
 
         return asyncio.run(_list())
     except Exception as e:
@@ -82,15 +122,14 @@ def _list_filesystems(project_id):
 
         async def _list():
             sdk = _nebius_sdk()
-            async with sdk:
-                client = FilesystemServiceClient(sdk)
-                resp = await client.list(ListFilesystemsRequest(parent_id=project_id))
-                filesystems = []
-                for fs in resp.items:
-                    name = fs.metadata.name if fs.metadata.name else "(unnamed)"
-                    size_gb = getattr(fs.spec, "size_gibibytes", 0) or 0
-                    filesystems.append((fs.metadata.id, name, size_gb))
-                return filesystems
+            client = FilesystemServiceClient(sdk)
+            resp = await client.list(ListFilesystemsRequest(parent_id=project_id))
+            filesystems = []
+            for fs in resp.items:
+                name = fs.metadata.name if fs.metadata.name else "(unnamed)"
+                size_gb = getattr(fs.spec, "size_gibibytes", 0) or 0
+                filesystems.append((fs.metadata.id, name, size_gb))
+            return filesystems
 
         return asyncio.run(_list())
     except Exception as e:
@@ -111,20 +150,19 @@ def _create_filesystem(project_id, name, size_gb):
 
         async def _create():
             sdk = _nebius_sdk()
-            async with sdk:
-                client = FilesystemServiceClient(sdk)
-                op = await client.create(CreateFilesystemRequest(
-                    metadata=ResourceMetadata(
-                        parent_id=project_id,
-                        name=name,
-                    ),
-                    spec=FilesystemSpec(
-                        type=FilesystemSpec.FilesystemType.NETWORK_SSD,
-                        size_gibibytes=size_gb,
-                    ),
-                ))
-                await op.wait()
-                return op.resource_id
+            client = FilesystemServiceClient(sdk)
+            op = await client.create(CreateFilesystemRequest(
+                metadata=ResourceMetadata(
+                    parent_id=project_id,
+                    name=name,
+                ),
+                spec=FilesystemSpec(
+                    type=FilesystemSpec.FilesystemType.NETWORK_SSD,
+                    size_gibibytes=size_gb,
+                ),
+            ))
+            await op.wait()
+            return op.resource_id
 
         return asyncio.run(_create())
     except Exception as e:
@@ -145,23 +183,259 @@ def _resize_filesystem(filesystem_id, new_size_gb):
 
         async def _resize():
             sdk = _nebius_sdk()
-            async with sdk:
-                client = FilesystemServiceClient(sdk)
-                fs = await client.get(GetFilesystemRequest(id=filesystem_id))
-                op = await client.update(UpdateFilesystemRequest(
-                    metadata=fs.metadata,
-                    spec=FilesystemSpec(
-                        type=fs.spec.type,
-                        size_gibibytes=new_size_gb,
-                    ),
-                ))
-                await op.wait()
-                return True
+            client = FilesystemServiceClient(sdk)
+            fs = await client.get(GetFilesystemRequest(id=filesystem_id))
+            op = await client.update(UpdateFilesystemRequest(
+                metadata=fs.metadata,
+                spec=FilesystemSpec(
+                    type=fs.spec.type,
+                    size_gibibytes=new_size_gb,
+                ),
+            ))
+            await op.wait()
+            return True
 
         return asyncio.run(_resize())
     except Exception as e:
         console.print(f"[red]Failed to resize filesystem: {e}[/red]")
         return False
+
+
+def _list_service_accounts(project_id):
+    """List existing service accounts. Returns list of (id, name) or None."""
+    try:
+        import asyncio
+        from nebius.api.nebius.iam.v1 import ServiceAccountServiceClient, ListServiceAccountRequest
+
+        async def _list():
+            sdk = _nebius_sdk()
+            client = ServiceAccountServiceClient(sdk)
+            resp = await client.list(ListServiceAccountRequest(parent_id=project_id))
+            accounts = []
+            for sa in resp.items:
+                name = sa.metadata.name if sa.metadata.name else "(unnamed)"
+                accounts.append((sa.metadata.id, name))
+            return accounts
+
+        return asyncio.run(_list())
+    except Exception as e:
+        Console(stderr=True).print(f"[yellow]Warning:[/yellow] Failed to list service accounts: {e}")
+        return None
+
+
+def _create_service_account(project_id, name):
+    """Create a service account. Returns SA ID or None."""
+    try:
+        import asyncio
+        from nebius.api.nebius.common.v1 import ResourceMetadata
+        from nebius.api.nebius.iam.v1 import (
+            ServiceAccountServiceClient,
+            CreateServiceAccountRequest,
+        )
+
+        async def _create():
+            sdk = _nebius_sdk()
+            client = ServiceAccountServiceClient(sdk)
+            op = await client.create(CreateServiceAccountRequest(
+                metadata=ResourceMetadata(
+                    parent_id=project_id,
+                    name=name,
+                ),
+            ))
+            await op.wait()
+            return op.resource_id
+
+        return asyncio.run(_create())
+    except Exception as e:
+        console.print(f"[red]Failed to create service account: {e}[/red]")
+        return None
+
+
+def _add_to_editors_group(project_id, sa_id):
+    """Add a service account to the editors group and grant it admin on itself.
+
+    The SA needs editor permissions for compute + storage operations.
+    It also needs admin scoped to its own SA resource so it can attach
+    itself to instances it creates (required for Object Storage access).
+    """
+    try:
+        import asyncio
+        from nebius.api.nebius.common.v1 import ResourceMetadata
+        from nebius.api.nebius.iam.v1 import (
+            ProjectServiceClient,
+            GetProjectRequest,
+            GroupServiceClient,
+            GetGroupByNameRequest,
+            GroupMembershipServiceClient,
+            CreateGroupMembershipRequest,
+            GroupMembershipSpec,
+            AccessPermitServiceClient,
+            CreateAccessPermitRequest,
+            AccessPermitSpec,
+        )
+
+        async def _add():
+            sdk = _nebius_sdk()
+            # Get tenant ID from project
+            project_client = ProjectServiceClient(sdk)
+            project = await project_client.get(GetProjectRequest(id=project_id))
+            tenant_id = project.metadata.parent_id
+
+            # Find editors group
+            group_client = GroupServiceClient(sdk)
+            group = await group_client.get_by_name(GetGroupByNameRequest(
+                parent_id=tenant_id,
+                name="editors",
+            ))
+
+            # Add SA as member of editors group
+            membership_client = GroupMembershipServiceClient(sdk)
+            try:
+                op = await membership_client.create(CreateGroupMembershipRequest(
+                    metadata=ResourceMetadata(parent_id=group.metadata.id),
+                    spec=GroupMembershipSpec(member_id=sa_id),
+                ))
+                await op.wait()
+            except Exception as e:
+                if "ALREADY_EXISTS" not in str(e):
+                    raise
+
+            # Grant admin scoped to the SA itself so it can attach
+            # itself to instances (editors role alone doesn't allow this)
+            permit_client = AccessPermitServiceClient(sdk)
+            try:
+                op = await permit_client.create(CreateAccessPermitRequest(
+                    metadata=ResourceMetadata(parent_id=group.metadata.id),
+                    spec=AccessPermitSpec(
+                        resource_id=sa_id,
+                        role="admin",
+                    ),
+                ))
+                await op.wait()
+            except Exception as e:
+                if "ALREADY_EXISTS" not in str(e):
+                    raise
+
+            return True
+
+        return asyncio.run(_add())
+    except Exception as e:
+        console.print(f"[yellow]Warning:[/yellow] Failed to add SA to editors group: {e}")
+        return False
+
+
+def _create_service_account_key(project_id, sa_id):
+    """Generate an RSA key pair, upload the public key, and write credentials.json.
+
+    Returns True on success.
+    """
+    try:
+        import asyncio
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from nebius.api.nebius.common.v1 import ResourceMetadata
+        from nebius.api.nebius.iam.v1 import (
+            AuthPublicKeyServiceClient,
+            CreateAuthPublicKeyRequest,
+            AuthPublicKeySpec,
+            Account,
+        )
+
+        async def _create():
+            # Generate RSA key pair
+            private_key = rsa.generate_private_key(
+                public_exponent=65537,
+                key_size=2048,
+            )
+            private_pem = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            ).decode()
+            public_pem = private_key.public_key().public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            ).decode()
+
+            # Upload public key
+            sdk = _nebius_sdk()
+            client = AuthPublicKeyServiceClient(sdk)
+            op = await client.create(CreateAuthPublicKeyRequest(
+                metadata=ResourceMetadata(parent_id=project_id),
+                spec=AuthPublicKeySpec(
+                    account=Account(
+                        service_account=Account.ServiceAccount(id=sa_id),
+                    ),
+                    data=public_pem,
+                    description="brr cluster autoscaling",
+                ),
+            ))
+            await op.wait()
+            key_id = op.resource_id
+
+            # Write credentials.json
+            creds = {
+                "subject-credentials": {
+                    "type": "JWT",
+                    "alg": "RS256",
+                    "private-key": private_pem,
+                    "kid": key_id,
+                    "iss": sa_id,
+                    "sub": sa_id,
+                }
+            }
+            NEBIUS_CREDS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            NEBIUS_CREDS_PATH.write_text(json.dumps(creds, indent=2) + "\n")
+            os.chmod(NEBIUS_CREDS_PATH, 0o600)
+            return True
+
+        return asyncio.run(_create())
+    except Exception as e:
+        console.print(f"[red]Failed to create service account key: {e}[/red]")
+        return False
+
+
+def _create_s3_access_key(project_id, sa_id):
+    """Create an S3-compatible access key for Object Storage.
+
+    Returns (aws_access_key_id, secret) or None on failure.
+    """
+    try:
+        import asyncio
+        from nebius.api.nebius.common.v1 import ResourceMetadata
+        from nebius.api.nebius.iam.v1 import Account
+        from nebius.api.nebius.iam.v2 import (
+            AccessKeyServiceClient,
+            CreateAccessKeyRequest,
+            AccessKeySpec,
+            GetAccessKeySecretRequest,
+        )
+
+        async def _create():
+            sdk = _nebius_sdk()
+            client = AccessKeyServiceClient(sdk)
+            op = await client.create(CreateAccessKeyRequest(
+                metadata=ResourceMetadata(parent_id=project_id),
+                spec=AccessKeySpec(
+                    account=Account(
+                        service_account=Account.ServiceAccount(id=sa_id),
+                    ),
+                    description="brr object storage",
+                ),
+            ))
+            await op.wait()
+            key_id = op.resource_id
+
+            # Fetch the AWS key ID and secret (only available once)
+            secret_resp = await client.get_secret(
+                GetAccessKeySecretRequest(id=key_id)
+            )
+            return (secret_resp.aws_access_key_id, secret_resp.secret)
+
+        return asyncio.run(_create())
+    except Exception as e:
+        console.print(f"[red]Failed to create S3 access key: {e}[/red]")
+        return None
 
 
 def _get_or_create_ssh_key():
@@ -352,6 +626,65 @@ def configure_nebius():
     else:
         filesystem_id = ""
 
+    # --- Service account ---
+    console.print()
+    s3_key_id = existing.get("NEBIUS_S3_ACCESS_KEY_ID", "")
+    s3_secret_key = existing.get("NEBIUS_S3_SECRET_KEY", "")
+    service_account_id = existing.get("NEBIUS_SERVICE_ACCOUNT_ID", "")
+
+    accounts = _list_service_accounts(project_id)
+    sa_choices = []
+    if accounts:
+        for said, name in accounts:
+            sa_choices.append(Choice(value=said, name=f"{name} ({said})"))
+    sa_choices.append(Choice(value="_create", name="Create new service account"))
+
+    default_sa = service_account_id if service_account_id in [a[0] for a in (accounts or [])] else None
+    choice = inquirer.select(
+        message="Select service account",
+        choices=sa_choices,
+        default=default_sa,
+    ).execute()
+
+    created = False
+    if choice == "_create":
+        sa_name = click.prompt("Service account name", default="brr-cluster")
+        with console.status("[bold green]Creating service account..."):
+            service_account_id = _create_service_account(project_id, sa_name) or ""
+        if service_account_id:
+            console.print(f"Created service account: [green]{service_account_id}[/green]")
+            created = True
+    else:
+        service_account_id = choice
+
+    if service_account_id:
+        # Permissions (editors group + scoped admin access permit)
+        with console.status("[bold green]Setting up permissions..."):
+            if _add_to_editors_group(project_id, service_account_id):
+                console.print("Added to [green]editors[/green] group with SA access permit")
+
+        # Credentials key for node provider (autoscaling)
+        needs_creds = created or not NEBIUS_CREDS_PATH.exists()
+        if not needs_creds and NEBIUS_CREDS_PATH.exists():
+            try:
+                creds = json.loads(NEBIUS_CREDS_PATH.read_text())
+                needs_creds = creds.get("subject-credentials", {}).get("iss", "") != service_account_id
+            except (json.JSONDecodeError, KeyError):
+                needs_creds = True
+        if needs_creds:
+            with console.status("[bold green]Generating credentials key..."):
+                if _create_service_account_key(project_id, service_account_id):
+                    console.print(f"Wrote credentials: [green]{NEBIUS_CREDS_PATH}[/green]")
+
+        # S3 access key for Object Storage
+        # Recreate if missing or if SA changed (needs_creds implies SA mismatch)
+        if not s3_key_id or needs_creds:
+            with console.status("[bold green]Creating S3 access key..."):
+                result = _create_s3_access_key(project_id, service_account_id)
+            if result:
+                s3_key_id, s3_secret_key = result
+                console.print(f"S3 access key: [green]{s3_key_id}[/green]")
+
     # --- GitHub SSH access ---
     console.print()
     github_ssh_key = existing.get("GITHUB_SSH_KEY", "")
@@ -369,6 +702,9 @@ def configure_nebius():
         "NEBIUS_SUBNET_ID": subnet_id,
         "NEBIUS_SSH_KEY": ssh_key,
         "NEBIUS_FILESYSTEM_ID": filesystem_id,
+        "NEBIUS_SERVICE_ACCOUNT_ID": service_account_id,
+        "NEBIUS_S3_ACCESS_KEY_ID": s3_key_id,
+        "NEBIUS_S3_SECRET_KEY": s3_secret_key,
         "GITHUB_SSH_KEY": github_ssh_key,
     }
 

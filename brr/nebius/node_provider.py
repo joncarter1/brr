@@ -23,6 +23,8 @@ class NebiusNodeProvider(NodeProvider):
         self.project_id = provider_config["project_id"]
         fs_id = provider_config.get("filesystem_id", "")
         self.filesystem_id = "" if not fs_id or "{{" in fs_id else fs_id
+        sa_id = provider_config.get("service_account_id", "")
+        self.service_account_id = "" if not sa_id or "{{" in sa_id else sa_id
         # Unlike AWS, stopped Nebius instances still incur disk costs.
         # Default to deleting nodes on scale-down to avoid surprise charges.
         # Set cache_stopped_nodes: true in the provider config to keep them.
@@ -253,7 +255,7 @@ class NebiusNodeProvider(NodeProvider):
                     )
                 )
 
-            spec = InstanceSpec(
+            spec_kwargs = dict(
                 recovery_policy=InstanceRecoveryPolicy.FAIL,
                 resources=ResourcesSpec(
                     platform=node_config["platform_id"],
@@ -274,6 +276,9 @@ class NebiusNodeProvider(NodeProvider):
                 ],
                 cloud_init_user_data=cloud_init,
             )
+            if self.service_account_id:
+                spec_kwargs["service_account_id"] = self.service_account_id
+            spec = InstanceSpec(**spec_kwargs)
 
             op = await instance_client.create(CreateInstanceRequest(
                 metadata=ResourceMetadata(

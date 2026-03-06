@@ -12,6 +12,9 @@ CONFIG_DEFAULTS = {
     "INSTALL_CLAUDE_CODE": "false",
     "INSTALL_CODEX": "false",
     "INSTALL_GEMINI": "false",
+    "NEBIUS_SERVICE_ACCOUNT_ID": "",
+    "NEBIUS_S3_ACCESS_KEY_ID": "",
+    "NEBIUS_S3_SECRET_KEY": "",
 }
 
 _home_state = Path.home() / ".brr"

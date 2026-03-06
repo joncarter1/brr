@@ -37,6 +37,18 @@ append_line_once() {
   fi
 }
 
+ensure_aws_cli() {
+  if ! command -v aws >/dev/null 2>&1; then
+    info "Installing AWS CLI v2"
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "$tmpdir/awscliv2.zip"
+    unzip -q "$tmpdir/awscliv2.zip" -d "$tmpdir"
+    sudo "$tmpdir/aws/install" --update
+    rm -rf "$tmpdir"
+  fi
+}
+
 # --- Base packages ---
 if ! dpkg -s nfs-common curl unzip bzip2 make perl >/dev/null 2>&1; then
   info "Installing base packages"
@@ -195,16 +207,7 @@ sudo chmod +x /usr/local/bin/brr-ensure-mount
 
 # --- AWS CLI ---
 if [ "${PROVIDER:-aws}" = "aws" ]; then
-  if ! command -v aws >/dev/null 2>&1; then
-    info "Installing AWS CLI v2"
-    tmpdir="$(mktemp -d)"
-    curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "$tmpdir/awscliv2.zip"
-    unzip -q "$tmpdir/awscliv2.zip" -d "$tmpdir"
-    sudo "$tmpdir/aws/install" --update
-    rm -rf "$tmpdir"
-  else
-    info "AWS CLI already installed: $(aws --version 2>&1 | head -n1)"
-  fi
+  ensure_aws_cli
 fi
 
 # --- GitHub SSH access (copied via file_mounts) ---
@@ -290,7 +293,7 @@ fi
 # --- Python environment (uv, venv, Ray) ---
 if ! command -v uv >/dev/null 2>&1; then
   info "Installing uv package manager"
-  curl -LsSf https://astral.sh/uv/install.sh | sh
+  curl -LsSf https://astral.sh/uv/install.sh | INSTALLER_NO_MODIFY_PATH=1 sh
 else
   info "uv already installed: $(uv --version 2>/dev/null || true)"
 fi
@@ -372,6 +375,16 @@ if [ "${PROVIDER:-}" = "nebius" ]; then
     cp "/tmp/brr/nebius_credentials.json" "$HOME/.nebius/credentials.json"
     info "Nebius credentials configured"
   fi
+
+  # Configure AWS CLI for Object Storage access
+  if [ -n "${NEBIUS_S3_ACCESS_KEY_ID:-}" ] && [ -n "${NEBIUS_S3_SECRET_KEY:-}" ]; then
+    ensure_aws_cli
+    aws configure set aws_access_key_id "$NEBIUS_S3_ACCESS_KEY_ID"
+    aws configure set aws_secret_access_key "$NEBIUS_S3_SECRET_KEY"
+    aws configure set region "${NEBIUS_REGION:-eu-north1}"
+    aws configure set endpoint_url "https://storage.${NEBIUS_REGION:-eu-north1}.nebius.cloud:443"
+    info "AWS CLI configured for Nebius Object Storage"
+  fi
 fi
 
 # --- Shell environment ---
@@ -435,6 +448,11 @@ sudo tee /etc/profile.d/brr.sh >/dev/null <<'BRRSH'
 # brr shell environment
 [ -n "$_BRR_ENV_LOADED" ] && return
 export _BRR_ENV_LOADED=1
+
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
 
 export UV_CACHE_DIR="/tmp/uv"
 export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"

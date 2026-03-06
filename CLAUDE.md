@@ -72,7 +72,7 @@ Key behaviors:
 
 #### Nebius
 
-- **`brr/nebius/configure.py`** — Project selection, subnet, SSH keys, shared filesystem, GitHub SSH.
+- **`brr/nebius/configure.py`** — Project selection, subnet, SSH keys, shared filesystem, service account, GitHub SSH.
 - **`brr/nebius/nodes.py`** — Instance queries (`query_clusters`, `query_head_ip`), SSH config management.
 - **`brr/nebius/node_provider.py`** — Custom Ray NodeProvider for autoscaling. Stop-instead-of-delete for cached nodes. Restarts stopped instances before creating new ones.
 - **`brr/nebius/templates/`** — Ray YAML templates: `cpu.yaml`, `h100.yaml`, `cpu-h100s.yaml`.
@@ -86,3 +86,6 @@ Key behaviors:
 - External providers (Nebius) need explicit `resources: {CPU: N}` in Ray YAML templates — Ray can't auto-detect.
 - Unresolved `{{VAR}}` placeholders in provider config must be guarded (e.g. `"{{" in value` check in node_provider).
 - InquirerPy `Choice` class doesn't have a `disabled` parameter. Use dict syntax `{"value": ..., "name": ..., "disabled": "reason"}` for disabled items.
+- Nebius `editor` role alone cannot attach a service account to an instance. The SA needs an access permit granting `admin` scoped to its own SA resource (not project-wide admin). Configure wizard handles this in `_add_to_editors_group`.
+- Nebius configure wizard uses `SDK(config_reader=Config())` to leverage the user's personal CLI credentials (admin-level OAuth) for IAM setup. The node provider uses `credentials_file_name` (SA key file) separately.
+- Nebius SDK uses `ListServiceAccountRequest` (singular), not `ListServiceAccountsRequest`. Similarly `list_members` not `list`, and response field is `memberships` not `items` for group membership queries.

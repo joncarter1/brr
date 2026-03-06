@@ -191,11 +191,23 @@ def _ray_cmd(provider="aws"):
     raise SystemExit(1)
 
 
+def _provider_env(provider):
+    """Build env dict with PYTHONPATH for non-AWS providers (local Ray import)."""
+    if provider == "aws":
+        return None
+    import os
+
+    brr_parent = str(Path(__file__).parent.parent)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = brr_parent + ":" + env.get("PYTHONPATH", "")
+    return env
+
+
 def _run_ray(args, provider="aws"):
     """Run a ray CLI command, passing through stdout/stderr."""
     cmd = _ray_cmd(provider) + args
     console.print(f"[dim]$ {escape(' '.join(cmd))}[/dim]")
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, env=_provider_env(provider))
     if result.returncode != 0:
         sys.exit(result.returncode)
 
@@ -392,7 +404,7 @@ def up(template, overrides, no_config_cache, yes, dry_run):
 
     cmd = _ray_cmd(provider) + ray_args
     console.print(f"[dim]$ {escape(' '.join(cmd))}[/dim]")
-    ray_result = subprocess.run(cmd)
+    ray_result = subprocess.run(cmd, env=_provider_env(provider))
 
     # Post-ray: sync SSH config even if ray up had warnings (non-zero exit)
     try:
@@ -640,6 +652,10 @@ def list_cmd(show_all):
 
     project_root = find_project_root()
 
+    if not show_all and not project_root:
+        console.print("[yellow]Not in a brr project.[/yellow] Use [bold]brr list --all[/bold] to see all clusters.")
+        return
+
     all_clusters = []  # list of (provider, cluster_dict)
     ray_statuses = {}
     any_queried = False
@@ -682,11 +698,8 @@ def list_cmd(show_all):
                 cluster_map.update(_project_cluster_map(proj))
 
     # Filter to project clusters unless --all
-    if not show_all:
-        if project_root:
-            all_clusters = [(p, c) for p, c in all_clusters if c["cluster_name"] in cluster_map]
-        else:
-            all_clusters = []
+    if not show_all and project_root:
+        all_clusters = [(p, c) for p, c in all_clusters if c["cluster_name"] in cluster_map]
 
     if not all_clusters:
         if not any_queried:

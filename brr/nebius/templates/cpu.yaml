@@ -20,6 +20,7 @@ provider:
   module: brr.nebius.node_provider.NebiusNodeProvider
   project_id: "{{NEBIUS_PROJECT_ID}}"
   filesystem_id: "{{NEBIUS_FILESYSTEM_ID}}"
+  service_account_id: "{{NEBIUS_SERVICE_ACCOUNT_ID}}"
   cache_stopped_nodes: false  # Delete on scale down. Otherwise we incur disk fees for stopped nodes.
 
 auth:

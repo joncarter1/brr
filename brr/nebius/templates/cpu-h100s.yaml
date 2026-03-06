@@ -11,7 +11,6 @@
 #   image_family — OS image (ubuntu22.04-driverless, ubuntu22.04-cuda12)
 #   resources    — required: tell Ray what the node has (CPU: N, GPU: N)
 
-cluster_name: cpu-h100s
 max_workers: 4
 idle_timeout_minutes: 5
 
@@ -51,7 +50,7 @@ available_node_types:
       preset_id: 8gpu-128vcpu-1600gb
       image_family: ubuntu22.04-cuda12
       subnet_id: "{{NEBIUS_SUBNET_ID}}"
-      disk_size_gb: 50
+      disk_size_gb: 1000
       disk_type: network-ssd
 
 # Upload local files/dirs to all nodes (merged with brr's own file_mounts).

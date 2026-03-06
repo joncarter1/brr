@@ -6,7 +6,6 @@
 # Add setup_commands to run your own commands after brr setup completes.
 # Override fields via CLI: brr up aws:cpu-l4 max_workers=8
 
-cluster_name: cpu-l4
 max_workers: 4
 
 provider:

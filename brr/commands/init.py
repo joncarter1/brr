@@ -114,11 +114,6 @@ def init_cmd():
 
         for project_name, builtin_name in tpl_map.items():
             content = _read_builtin(provider, builtin_name)
-            content = content.replace(
-                f"cluster_name: {builtin_name}",
-                f"cluster_name: {repo_name}-{project_name}",
-                1,
-            )
             if is_uv_project:
                 project_dir = f"$HOME/code/{repo_name}"
                 content = content.replace(

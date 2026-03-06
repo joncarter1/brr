@@ -140,16 +140,27 @@ def _resolve_provider(name):
     return provider, tpl
 
 
-def _project_root_for(provider, tpl_name):
+def _project_root_for(provider, tpl_name, no_project=False):
     """Find project_root relevant to this template.
 
-    Returns project root if a matching project template exists, else None (built-in).
+    Returns project root if a matching project template exists.
+    Raises UsageError if inside a project but template doesn't exist
+    (unless no_project=True, which always returns None).
     """
+    if no_project:
+        return None
     project_root = find_project_root()
     if project_root is not None:
         project_tpl = Path(project_root) / ".brr" / provider / f"{tpl_name}.yaml"
         if not project_tpl.exists():
-            return None  # not in project, fall to built-in
+            # List available project templates for this provider
+            provider_dir = Path(project_root) / ".brr" / provider
+            available = sorted(p.stem for p in provider_dir.glob("*.yaml")) if provider_dir.is_dir() else []
+            msg = f"Template '{tpl_name}' not found in project .brr/{provider}/."
+            if available:
+                msg += f"\nAvailable project templates: {', '.join(available)}"
+            msg += "\nUse --no-project to use built-in templates."
+            raise click.UsageError(msg)
     return project_root
 
 
@@ -212,42 +223,26 @@ def _run_ray(args, provider="aws"):
         sys.exit(result.returncode)
 
 
-def _extract_cluster_name(path):
-    """Extract cluster_name from a YAML template without full parsing.
+def _resolve_cluster_name(tpl_name, project_root=None):
+    """Resolve template name to cluster_name.
 
-    Templates may contain {{VAR}} placeholders that aren't valid YAML,
-    but cluster_name is always a plain string on its own line.
-    """
-    import re
-    for line in Path(path).read_text().splitlines():
-        m = re.match(r'^cluster_name:\s*(\S+)', line)
-        if m:
-            return m.group(1)
-    return None
-
-
-def _resolve_cluster_name(tpl_name, provider, project_root=None):
-    """Resolve template name to cluster_name from project YAML.
-
-    Falls back to tpl_name if not in a project or no cluster_name field.
+    Inside a project: derives {repo_name}-{tpl_name}.
+    Outside a project: returns tpl_name.
     """
     if project_root and "/" not in tpl_name and not tpl_name.endswith(".yaml"):
-        tpl_path = Path(project_root) / ".brr" / provider / f"{tpl_name}.yaml"
-        if tpl_path.exists():
-            name = _extract_cluster_name(tpl_path)
-            if name:
-                return name
+        return f"{Path(project_root).name}-{tpl_name}"
     return tpl_name
 
 
 def _project_cluster_map(project_root):
     """Return mapping of cluster_name → template_stem for project templates."""
     mapping = {}
+    repo_name = Path(project_root).name
     brr_dir = Path(project_root) / ".brr"
     for yaml_file in brr_dir.glob("*/*.yaml"):
-        name = _extract_cluster_name(yaml_file)
-        if name:
-            mapping[name] = yaml_file.stem
+        tpl_stem = yaml_file.stem
+        cluster_name = f"{repo_name}-{tpl_stem}"
+        mapping[cluster_name] = tpl_stem
     return mapping
 
 
@@ -304,12 +299,13 @@ def _sync_ssh_config(provider, cluster_name, display_name=None):
 @click.option("--no-config-cache", is_flag=True, help="Disable Ray config cache")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompts")
 @click.option("--dry-run", is_flag=True, help="Print rendered config without launching")
-def up(template, overrides, no_config_cache, yes, dry_run):
+@click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
+def up(template, overrides, no_config_cache, yes, dry_run, no_project):
     """Launch or update a Ray cluster.
 
     TEMPLATE is provider:name (aws:h100, nebius:cpu) or a .yaml file path.
-    Inside a project, provider:name resolves project templates first (e.g.
-    aws:dev → .brr/aws/dev.yaml), then falls back to built-in templates.
+    Inside a project, provider:name resolves project templates (e.g.
+    aws:dev → .brr/aws/dev.yaml). Use --no-project for built-in templates.
 
     OVERRIDES are key=value pairs applied to the rendered YAML.
     Use `brr templates show TEMPLATE` to see available overrides.
@@ -325,7 +321,7 @@ def up(template, overrides, no_config_cache, yes, dry_run):
     import yaml
 
     provider, tpl_name = _resolve_provider(template)
-    project_root = _project_root_for(provider, tpl_name)
+    project_root = _project_root_for(provider, tpl_name, no_project=no_project)
 
     config, _ = read_merged_config(project_root)
     check_provider_configured(provider, config)
@@ -336,7 +332,11 @@ def up(template, overrides, no_config_cache, yes, dry_run):
         console.print(f"[red]{e}[/red]")
         raise SystemExit(1)
 
-    console.print(f"Template: [bold cyan]{tpl_name}[/bold cyan]")
+    if project_root:
+        tpl_path = Path(project_root) / ".brr" / provider / f"{tpl_name}.yaml"
+        console.print(f"Template: [bold cyan]{tpl_name}[/bold cyan] (project {tpl_path.relative_to(project_root)})")
+    else:
+        console.print(f"Template: [bold cyan]{tpl_name}[/bold cyan] (built-in)")
 
     rendered = render(tpl_content, config)
     template_aliases = extract_template_aliases(rendered)
@@ -351,7 +351,8 @@ def up(template, overrides, no_config_cache, yes, dry_run):
 
     check_required(rendered, template_aliases)
 
-    cluster_name = rendered.get("cluster_name", tpl_name)
+    cluster_name = _resolve_cluster_name(tpl_name, project_root)
+    rendered["cluster_name"] = cluster_name
 
     # First deploy: git clone the project. Re-deploy: infrastructure only.
     sync_project = True
@@ -421,7 +422,8 @@ def up(template, overrides, no_config_cache, yes, dry_run):
 @click.argument("template")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompts")
 @click.option("--delete", is_flag=True, help="Full cleanup: terminate all instances, remove local staging files")
-def down(template, yes, delete):
+@click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
+def down(template, yes, delete, no_project):
     """Stop a cluster (preserving instances for fast restart).
 
     Instances are stopped, not terminated — local disk data is preserved and
@@ -438,8 +440,8 @@ def down(template, yes, delete):
     from brr.state import staging_dir_for, rendered_yaml_for
 
     provider, tpl_name = _resolve_provider(template)
-    project_root = _project_root_for(provider, tpl_name)
-    cluster_name = _resolve_cluster_name(tpl_name, provider, project_root)
+    project_root = _project_root_for(provider, tpl_name, no_project=no_project)
+    cluster_name = _resolve_cluster_name(tpl_name, project_root)
     ssh_alias = cluster_ssh_alias(provider, cluster_name)
 
     if "/" in tpl_name or tpl_name.endswith(".yaml"):
@@ -491,7 +493,8 @@ def down(template, yes, delete):
 @click.command()
 @click.argument("cluster")
 @click.argument("command", nargs=-1)
-def attach(cluster, command):
+@click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
+def attach(cluster, command, no_project):
     """SSH into the head node of a Ray cluster.
 
     CLUSTER is provider:name (e.g. aws:h100, nebius:cpu).
@@ -500,8 +503,8 @@ def attach(cluster, command):
     Optionally pass a COMMAND to run on the node (e.g. brr attach aws:h100 claude).
     """
     provider, name = _resolve_provider(cluster)
-    project_root = _project_root_for(provider, name)
-    cluster_name = _resolve_cluster_name(name, provider, project_root)
+    project_root = _project_root_for(provider, name, no_project=no_project)
+    cluster_name = _resolve_cluster_name(name, project_root)
     host = cluster_ssh_alias(provider, cluster_name)
 
     # If launched from a project, cd into ~/code/{repo} on the remote
@@ -529,7 +532,8 @@ def attach(cluster, command):
 @click.command()
 @click.argument("template", required=False)
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt")
-def clean(template, yes):
+@click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
+def clean(template, yes, no_project):
     """Terminate stopped (cached) instances.
 
     Stopped instances are left behind by `brr down` (which stops rather than
@@ -545,8 +549,8 @@ def clean(template, yes):
 
     if template:
         provider, tpl_name = _resolve_provider(template)
-        project_root = _project_root_for(provider, tpl_name)
-        cluster_name = _resolve_cluster_name(tpl_name, provider, project_root)
+        project_root = _project_root_for(provider, tpl_name, no_project=no_project)
+        cluster_name = _resolve_cluster_name(tpl_name, project_root)
         providers_to_clean = [(provider, cluster_name)]
     else:
         # Clean all configured providers
@@ -596,7 +600,8 @@ def clean(template, yes):
 
 @click.command()
 @click.argument("cluster")
-def vscode(cluster):
+@click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
+def vscode(cluster, no_project):
     """Open VS Code on a running cluster via Remote SSH.
 
     Looks up the head node IP for CLUSTER (provider:name, e.g. aws:h100),
@@ -609,8 +614,8 @@ def vscode(cluster):
 
     provider, name = _resolve_provider(cluster)
     check_provider_configured(provider, config)
-    project_root = _project_root_for(provider, name)
-    cluster_name = _resolve_cluster_name(name, provider, project_root)
+    project_root = _project_root_for(provider, name, no_project=no_project)
+    cluster_name = _resolve_cluster_name(name, project_root)
 
     prov = get_provider(provider)
 
@@ -798,12 +803,13 @@ def templates_list():
 
 @templates.command()
 @click.argument("template")
-def show(template):
+@click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
+def show(template, no_project):
     """Show configurable arguments and rendered config for a template."""
     import yaml
 
     provider, tpl_name = _resolve_provider(template)
-    project_root = _project_root_for(provider, tpl_name)
+    project_root = _project_root_for(provider, tpl_name, no_project=no_project)
 
     cfg, _ = read_merged_config(project_root)
     check_provider_configured(provider, cfg)

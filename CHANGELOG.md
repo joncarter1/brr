@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.3
+
+### Fixed
+
+- Fix `brr-ensure-mount` hanging on Nebius when no shared filesystem is configured — a non-empty AWS `EFS_ID` in config.env prevented the early exit check.
+- Strip legacy `head_node` and `worker_nodes` fields from Ray config to silence Ray 2.x warnings.
+
 ## 0.8.2
 
 ### Fixed

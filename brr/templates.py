@@ -436,6 +436,10 @@ def inject_brr_infra(config, staging, git_info=None):
         (staging / "repo_info.json").write_text(json.dumps(git_info))
         config["head_setup_commands"].append("bash /tmp/brr/sync-repo.sh")
 
+    # Strip legacy Ray 1.x fields that trigger warnings in Ray 2.x
+    config.pop("head_node", None)
+    config.pop("worker_nodes", None)
+
     return config
 
 

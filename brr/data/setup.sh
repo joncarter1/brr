@@ -164,8 +164,12 @@ sudo tee /usr/local/bin/brr-ensure-mount >/dev/null <<'ENSURE_MOUNT'
 #!/bin/bash
 [ -f /tmp/brr/config.env ] && source /tmp/brr/config.env
 
-# Exit early if no shared filesystem configured
-[ -z "${EFS_ID:-}" ] && [ -z "${NEBIUS_FILESYSTEM_ID:-}" ] && exit 0
+# Exit early if no shared filesystem configured for this provider
+if [ "${PROVIDER:-aws}" = "nebius" ]; then
+  [ -z "${NEBIUS_FILESYSTEM_ID:-}" ] && exit 0
+else
+  [ -z "${EFS_ID:-}" ] && exit 0
+fi
 
 MOUNT_POINT="/shared"
 

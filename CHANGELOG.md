@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.0
+
+### Added
+
+- Auto-configure Nebius Object Storage credentials on instances — `brr configure nebius` creates S3 access keys and `setup.sh` configures AWS CLI automatically.
+- Service account setup is now a required step in `brr configure nebius`.
+- Attach service account to Nebius instances for Object Storage access.
+- Auto-derive `cluster_name` from project directory name — no more manual naming.
+- Clean up boot disks when deleting Nebius instances.
+
+### Changed
+
+- Built-in templates now require `--no-project` when run inside a project directory.
+- `brr list` returns early with a helpful message when not in a project instead of silently showing nothing.
+- S3 secret keys are stripped from baked images.
+
 ## 0.8.3
 
 ### Fixed

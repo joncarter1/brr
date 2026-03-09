@@ -314,12 +314,31 @@ class NebiusNodeProvider(NodeProvider):
             await operation.wait()
             logger.info(f"Stopped Nebius instance {node_id}")
         else:
-            from nebius.api.nebius.compute.v1 import DeleteInstanceRequest
+            from nebius.api.nebius.compute.v1 import (
+                DeleteInstanceRequest,
+                DeleteDiskRequest,
+            )
+
+            # Fetch instance to find boot disk before deletion
+            inst = await self._fetch_instance(node_id)
+            boot_disk_id = None
+            if inst and inst.spec and inst.spec.boot_disk:
+                boot_disk_id = inst.spec.boot_disk.existing_disk.id
 
             client = self._instance_client()
             operation = await client.delete(DeleteInstanceRequest(id=node_id))
             await operation.wait()
             logger.info(f"Deleted Nebius instance {node_id}")
+
+            # Clean up boot disk
+            if boot_disk_id:
+                try:
+                    disk_client = self._disk_client()
+                    disk_op = await disk_client.delete(DeleteDiskRequest(id=boot_disk_id))
+                    await disk_op.wait()
+                    logger.info(f"Deleted boot disk {boot_disk_id}")
+                except Exception:
+                    logger.warning(f"Failed to delete boot disk {boot_disk_id}", exc_info=True)
 
     def terminate_nodes(self, node_ids):
         for node_id in node_ids:

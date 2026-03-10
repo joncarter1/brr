@@ -2,7 +2,7 @@
 name: release
 description: Automate version bump, changelog update, and GitHub release.
 argument-hint: "[patch|minor|major] or [version-number]"
-disable-model-invocation: true
+disable-model-invocation: false
 ---
 
 # Release

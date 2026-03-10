@@ -5,6 +5,7 @@
 ### Fixed
 
 - Install uv directly to `~/.local/lib/` via `UV_INSTALL_DIR` instead of swapping the binary after install. Eliminates fragile binary-move logic and makes `uv self update` safe (updates the binary without overwriting the wrapper).
+- Enable model invocation for the `/release` skill.
 
 ## 0.9.0
 

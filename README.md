@@ -131,7 +131,7 @@ Project-specific dependencies go in `.brr/setup.sh` (created by `brr init`), whi
 
 ### uv integration
 
-brr wraps the `uv` binary to route virtual environments away from the shared EFS home directory:
+uv is installed to `~/.local/lib/` (via `UV_INSTALL_DIR`) with a routing wrapper at `~/.local/bin/uv` that redirects storage to instance-local disk:
 
 | Environment variable | Value | Purpose |
 | :--- | :--- | :--- |
@@ -139,7 +139,7 @@ brr wraps the `uv` binary to route virtual environments away from the shared EFS
 | `UV_PYTHON_INSTALL_DIR` | `/tmp/uv/python` | Managed Python builds (per-instance) |
 | `UV_PROJECT_ENVIRONMENT` | `/tmp/venvs/{project}` | Project venvs (per-instance) |
 
-The wrapper lives at `~/.local/bin/uv` and delegates to the real binary at `~/.local/lib/uv`. Both persist on EFS so new instances reuse them without reinstalling. Only caches, Python builds, and venvs are per-instance (rebuilt on boot from lockfiles).
+Both the binary and wrapper persist on EFS so new instances reuse them without reinstalling. `uv self update` updates the binary at `~/.local/lib/uv` without touching the wrapper. Only caches, Python builds, and venvs are per-instance (rebuilt on boot from lockfiles).
 
 For uv-managed projects, Ray runs via `uv run ray start` from the project directory — add `ray[default]` and your cloud SDK (e.g. `boto3`) to your project's dependencies. For non-uv clusters, Ray runs from a standalone venv at `/tmp/brr/venv`.
 

@@ -291,37 +291,27 @@ else
 fi
 
 # --- Python environment (uv, venv, Ray) ---
-if ! command -v uv >/dev/null 2>&1; then
+UV_REAL="$HOME/.local/lib/uv"
+if [ ! -x "$UV_REAL" ]; then
   info "Installing uv package manager"
-  curl -LsSf https://astral.sh/uv/install.sh | INSTALLER_NO_MODIFY_PATH=1 sh
+  curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR="$HOME/.local/lib" UV_NO_MODIFY_PATH=1 sh
 else
-  info "uv already installed: $(uv --version 2>/dev/null || true)"
+  info "uv already installed: ($("$UV_REAL" --version 2>/dev/null || true))"
 fi
 
-# Determine uv binary path for immediate use in this shell
-UV_BIN="$(command -v uv || true)"
-if [ -z "$UV_BIN" ] && [ -x "$HOME/.local/bin/uv" ]; then
-  UV_BIN="$HOME/.local/bin/uv"
-fi
-if [ -z "$UV_BIN" ]; then
-  UV_BIN="uv"
-fi
-
-# Route uv caches to /tmp so EFS flock issues don't hang uv commands.
-# The wrapper (installed later) also sets these, but we need them NOW
-# for the uv venv/pip commands below.
+# Route uv storage to local disk (EFS doesn't support flock).
 export UV_CACHE_DIR="/tmp/uv"
 export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"
 
 # Pre-install Python versions (avoids hangs later). TODO: Identify root cause of hanging.
-"$UV_BIN" python install 3.10 3.11 3.12 3.13
+"$UV_REAL" python install 3.10 3.11 3.12 3.13
 
 # Create virtual environment at /tmp/brr/venv if absent (instance-local, not in home)
 VENVDIR="/tmp/brr/venv"
 _WANT_PY="${PYTHON_VERSION:-3.11}"
 if [ ! -d "$VENVDIR" ]; then
   info "Creating Python ${_WANT_PY} virtual environment at $VENVDIR"
-  "$UV_BIN" venv --python "$_WANT_PY" "$VENVDIR"
+  "$UV_REAL" venv --python "$_WANT_PY" "$VENVDIR"
 else
   info "Virtual environment already exists at $VENVDIR"
 fi
@@ -329,7 +319,7 @@ fi
 # Install Ray in the virtual environment if missing
 if ! "$VENVDIR/bin/python" -c "import ray" >/dev/null 2>&1; then
   info "Installing Ray into the virtual environment"
-  ( . "$VENVDIR/bin/activate" && "$UV_BIN" pip install 'ray[default]' )
+  ( . "$VENVDIR/bin/activate" && "$UV_REAL" pip install 'ray[default]' )
 else
   info "Ray already installed in the virtual environment"
 fi
@@ -338,7 +328,7 @@ fi
 if [ "${PROVIDER:-aws}" = "aws" ]; then
   if ! "$VENVDIR/bin/python" -c "import boto3" >/dev/null 2>&1; then
     info "Installing boto3 into the virtual environment"
-    ( . "$VENVDIR/bin/activate" && "$UV_BIN" pip install 'boto3>=1.4.8' )
+    ( . "$VENVDIR/bin/activate" && "$UV_REAL" pip install 'boto3>=1.4.8' )
   else
     info "boto3 already installed in the virtual environment"
   fi
@@ -349,7 +339,7 @@ fi
 # PEP 668-blocked system pip.
 if [ ! -x "$VENVDIR/bin/pip" ]; then
   info "Installing pip into the virtual environment"
-  ( . "$VENVDIR/bin/activate" && "$UV_BIN" pip install pip )
+  ( . "$VENVDIR/bin/activate" && "$UV_REAL" pip install pip )
 fi
 sudo ln -sf "$VENVDIR/bin/pip" /usr/local/bin/pip
 sudo ln -sf "$VENVDIR/bin/pip3" /usr/local/bin/pip3
@@ -359,7 +349,7 @@ if [ "${PROVIDER:-}" = "nebius" ]; then
   # Install Nebius SDK so the node provider can create workers
   if ! "$VENVDIR/bin/python" -c "import nebius" >/dev/null 2>&1; then
     info "Installing Nebius SDK into the virtual environment"
-    ( . "$VENVDIR/bin/activate" && "$UV_BIN" pip install nebius )
+    ( . "$VENVDIR/bin/activate" && "$UV_REAL" pip install nebius )
   else
     info "Nebius SDK already installed in the virtual environment"
   fi
@@ -388,28 +378,17 @@ if [ "${PROVIDER:-}" = "nebius" ]; then
 fi
 
 # --- Shell environment ---
-# Two parts:
-#   1. In-place wrapper at ~/.local/bin/uv (replaces real binary, which is
-#      moved to ~/.local/lib/uv). Routes project venvs to /tmp to avoid EFS IO.
-#      Works regardless of shell config, PATH order, or dotfiles.
-#   2. /etc/profile.d/brr.sh for environment variables (PATH, UV_CACHE_DIR).
-
 UV_DIR="$HOME/.local/bin"
-UV_REAL="$HOME/.local/lib/uv"
-UV_LINK="$UV_DIR/uv"
 
-# Move real uv binary out of the way (skip if already wrapped)
-mkdir -p "$(dirname "$UV_REAL")"
-if [ -x "$UV_LINK" ] && [ ! -L "$UV_LINK" ] && ! grep -q 'local/lib/uv' "$UV_LINK" 2>/dev/null; then
-  mv "$UV_LINK" "$UV_REAL"
-fi
-# Migration: move .uv-real to new location
+# Migration: move real binary from old locations to ~/.local/lib/uv
 if [ -x "$UV_DIR/.uv-real" ]; then
   mv "$UV_DIR/.uv-real" "$UV_REAL"
 fi
+# If old wrapper left a script at ~/.local/bin/uv, it gets overwritten below.
 
-# uv wrapper — sets UV_PROJECT_ENVIRONMENT per-project, then execs real uv
-cat > "$UV_LINK" <<'UVWRAP'
+# Wrapper — routes caches and venvs to local disk, then execs real uv.
+mkdir -p "$UV_DIR"
+cat > "$UV_DIR/uv" <<'UVWRAP'
 #!/bin/bash
 export UV_CACHE_DIR="/tmp/uv"
 export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"
@@ -424,7 +403,10 @@ if [ -n "$_repo_root" ]; then
 fi
 exec "$HOME/.local/lib/uv" "$@"
 UVWRAP
-chmod +x "$UV_LINK"
+chmod +x "$UV_DIR/uv"
+
+# Symlink uvx
+ln -sf "$UV_REAL"x "$UV_DIR/uvx" 2>/dev/null || true
 
 # python/python3 wrappers in ~/.local/bin
 for cmd in python python3; do
@@ -454,7 +436,6 @@ case ":$PATH:" in
   *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac
 
-export UV_CACHE_DIR="/tmp/uv"
 export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"
 BRRSH
 # Also source from /etc/bash.bashrc for non-login bash shells (tmux)

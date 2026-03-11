@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.0
+
+### Added
+
+- Ray token authentication for cluster security — clusters now require a token to connect to the Ray dashboard and API.
+- Nebius security groups — `brr configure nebius` creates a security group that blocks public access to Ray ports, and `brr up` validates it's present.
+
+### Fixed
+
+- Auto-source `config.env` in project setup scripts so variables like `PROVIDER` are available (previously caused `unbound variable` errors with `set -u`).
+- Fix Nebius network egress rules for security groups.
+
 ## 0.9.1
 
 ### Fixed

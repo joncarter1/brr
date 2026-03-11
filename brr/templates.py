@@ -293,6 +293,27 @@ def _read_global_setup():
     return files("brr.data").joinpath("setup.sh").read_text()
 
 
+def _inject_config_source(script_content, preamble):
+    """Insert config.env sourcing into a project setup script.
+
+    Inserts after the shebang and any immediately following set lines,
+    so strict mode (set -euo pipefail) is active when we source.
+    """
+    lines = script_content.split("\n")
+    insert_at = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#!") or stripped.startswith("set "):
+            insert_at = i + 1
+        elif stripped == "" or stripped.startswith("#"):
+            # Skip blank lines and comments between shebang and set lines
+            continue
+        else:
+            break
+    lines.insert(insert_at, "\n" + preamble)
+    return "\n".join(lines)
+
+
 def prepare_staging(name, provider="aws", project_root=None):
     """Create staging directory with support files for a cluster.
 
@@ -313,19 +334,31 @@ def prepare_staging(name, provider="aws", project_root=None):
     (staging / "setup.sh").write_text(_read_global_setup())
 
     # Layer 2: Project setup — from .brr/setup.sh (or legacy .brr/{provider}/setup.sh)
+    # Prepend config.env sourcing so project scripts have access to PROVIDER
+    # and other config variables (global setup.sh sources it separately).
+    _config_preamble = (
+        '# Source config (auto-injected by brr)\n'
+        'if [ -f "/tmp/brr/config.env" ]; then source "/tmp/brr/config.env"; fi\n'
+    )
     project_setup_staged = False
     if project_root is not None:
         project_setup = Path(project_root) / ".brr" / "setup.sh"
         legacy_setup = Path(project_root) / ".brr" / provider / "setup.sh"
         if project_setup.exists():
-            (staging / "project-setup.sh").write_text(project_setup.read_text())
+            content = project_setup.read_text()
+            (staging / "project-setup.sh").write_text(
+                _inject_config_source(content, _config_preamble)
+            )
             project_setup_staged = True
         elif legacy_setup.exists():
             print(
                 f"  ⚠ .brr/{provider}/setup.sh is deprecated — "
                 f"move it to .brr/setup.sh (shared across providers)"
             )
-            (staging / "project-setup.sh").write_text(legacy_setup.read_text())
+            content = legacy_setup.read_text()
+            (staging / "project-setup.sh").write_text(
+                _inject_config_source(content, _config_preamble)
+            )
             project_setup_staged = True
 
     # Remove stale project-setup.sh if not staging one this time

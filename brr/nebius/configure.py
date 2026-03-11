@@ -108,6 +108,7 @@ def _get_or_create_security_group(project_id, subnet_id):
             CreateSecurityRuleRequest,
             SecurityRuleSpec,
             RuleIngress,
+            RuleEgress,
             RuleAccessAction,
             RuleProtocol,
             RuleType,
@@ -170,7 +171,19 @@ def _get_or_create_security_group(project_id, subnet_id):
                 ),
             ))
 
-            await asyncio.gather(ssh_op.wait(), mesh_op.wait())
+            # All outbound traffic (default-deny requires explicit egress)
+            egress_op = await rule_client.create(CreateSecurityRuleRequest(
+                metadata=ResourceMetadata(parent_id=sg_id, name="all-egress"),
+                spec=SecurityRuleSpec(
+                    access=RuleAccessAction.ALLOW,
+                    protocol=RuleProtocol.ANY,
+                    egress=RuleEgress(destination_cidrs=["0.0.0.0/0"]),
+                    type=RuleType.STATEFUL,
+                    priority=300,
+                ),
+            ))
+
+            await asyncio.gather(ssh_op.wait(), mesh_op.wait(), egress_op.wait())
 
             return sg_id
 

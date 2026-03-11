@@ -191,7 +191,7 @@ wheels = [
 
 [[package]]
 name = "brr-cli"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },
@@ -213,7 +213,7 @@ requires-dist = [
     { name = "boto3" },
     { name = "click" },
     { name = "inquirerpy" },
-    { name = "nebius" },
+    { name = "nebius", specifier = ">=0.3.37" },
     { name = "pyyaml" },
     { name = "ray", extras = ["default"] },
     { name = "rich" },
@@ -968,7 +968,7 @@ wheels = [
 
 [[package]]
 name = "nebius"
-version = "0.3.36"
+version = "0.3.42"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -981,9 +981,9 @@ dependencies = [
     { name = "pyjwt" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/2b/4dcfe89b704cb6a679be0b4329f90643c22392103076a3de94f3a4eed1b8/nebius-0.3.36.tar.gz", hash = "sha256:449656e2b295925204d1e2abd7c55c4fb6fdab5b1e4df368265fd1ea75d45586", size = 831009, upload-time = "2026-02-11T13:37:42.017Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/26/ed18e521e636a61e690d6d8d0166bbaf17299a2e916f89e0ebab642aa00a/nebius-0.3.42.tar.gz", hash = "sha256:23e88cd2a9e23037e0c9ee70b7f773529026a49ccc852f56553fa4e683efc433", size = 857645, upload-time = "2026-03-10T10:18:18.456Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ae/a0/5e6396fcfbcaf20c8d2d5990a35bfc3db26b012dd91f11b030f712043f05/nebius-0.3.36-py3-none-any.whl", hash = "sha256:9e3a7cc902bfecf69d782be430ad6718a1af6510a484edb4d3d3732fc9d6996a", size = 1168118, upload-time = "2026-02-11T13:37:39.858Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/08/c188d65dac98107ad6033d37cd943daae1a50e6746bed8cab9b8590ec0fb/nebius-0.3.42-py3-none-any.whl", hash = "sha256:2792c6385d90c4ca82e05d9b645d0d812f3d70e2f3043ca722682f5a70e54f27", size = 1206043, upload-time = "2026-03-10T10:18:15.541Z" },
 ]
 
 [[package]]

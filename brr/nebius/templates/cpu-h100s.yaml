@@ -20,6 +20,7 @@ provider:
   project_id: "{{NEBIUS_PROJECT_ID}}"
   filesystem_id: "{{NEBIUS_FILESYSTEM_ID}}"
   service_account_id: "{{NEBIUS_SERVICE_ACCOUNT_ID}}"
+  security_group_id: "{{NEBIUS_SECURITY_GROUP_ID}}"
   # cache_stopped_nodes: true  # Stop (not delete) on scale-down for faster restart. Costs disk fees while stopped.
 
 auth:

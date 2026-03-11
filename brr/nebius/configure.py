@@ -89,6 +89,97 @@ def _nebius_sdk():
     return _cached_sdk
 
 
+def _get_or_create_security_group(project_id, subnet_id):
+    """Get or create a 'brr-cluster' security group for the subnet's network.
+
+    Mirrors the AWS pattern: SSH from anywhere + all traffic within the group.
+    """
+    try:
+        import asyncio
+        from nebius.api.nebius.common.v1 import ResourceMetadata
+        from nebius.api.nebius.vpc.v1 import (
+            SubnetServiceClient,
+            GetSubnetRequest,
+            SecurityGroupServiceClient,
+            ListSecurityGroupsRequest,
+            CreateSecurityGroupRequest,
+            SecurityGroupSpec,
+            SecurityRuleServiceClient,
+            CreateSecurityRuleRequest,
+            SecurityRuleSpec,
+            RuleIngress,
+            RuleAccessAction,
+            RuleProtocol,
+            RuleType,
+        )
+
+        async def _get_or_create():
+            sdk = _nebius_sdk()
+
+            # Get network_id from subnet
+            subnet_client = SubnetServiceClient(sdk)
+            subnet = await subnet_client.get(GetSubnetRequest(id=subnet_id))
+            network_id = subnet.spec.network_id
+
+            # Look for existing brr-cluster security group
+            sg_client = SecurityGroupServiceClient(sdk)
+            resp = await sg_client.list(ListSecurityGroupsRequest(parent_id=project_id))
+            for sg in resp.items:
+                if sg.metadata.name == "brr-cluster":
+                    return sg.metadata.id
+
+            # Create security group
+            op = await sg_client.create(CreateSecurityGroupRequest(
+                metadata=ResourceMetadata(
+                    parent_id=project_id,
+                    name="brr-cluster",
+                ),
+                spec=SecurityGroupSpec(network_id=network_id),
+            ))
+            await op.wait()
+            sg_id = op.resource_id
+
+            # Add rules concurrently
+            rule_client = SecurityRuleServiceClient(sdk)
+
+            # SSH from anywhere
+            ssh_ingress = RuleIngress(source_cidrs=["0.0.0.0/0"])
+            ssh_ingress.destination_ports.append(22)
+            ssh_op = await rule_client.create(CreateSecurityRuleRequest(
+                metadata=ResourceMetadata(parent_id=sg_id),
+                spec=SecurityRuleSpec(
+                    access=RuleAccessAction.ALLOW,
+                    protocol=RuleProtocol.TCP,
+                    ingress=ssh_ingress,
+                    type=RuleType.STATEFUL,
+                    priority=100,
+                ),
+            ))
+
+            # All traffic within the security group
+            mesh_op = await rule_client.create(CreateSecurityRuleRequest(
+                metadata=ResourceMetadata(parent_id=sg_id),
+                spec=SecurityRuleSpec(
+                    access=RuleAccessAction.ALLOW,
+                    protocol=RuleProtocol.ANY,
+                    ingress=RuleIngress(
+                        source_security_group_id=sg_id,
+                    ),
+                    type=RuleType.STATEFUL,
+                    priority=200,
+                ),
+            ))
+
+            await asyncio.gather(ssh_op.wait(), mesh_op.wait())
+
+            return sg_id
+
+        return asyncio.run(_get_or_create())
+    except Exception as e:
+        console.print(f"[yellow]Warning:[/yellow] Failed to set up security group: {e}")
+        return None
+
+
 def _list_subnets(project_id):
     """Try to list subnets via Nebius SDK. Returns list of (id, name, zone) or None."""
     try:
@@ -565,6 +656,15 @@ def configure_nebius():
             default=existing.get("NEBIUS_SUBNET_ID", ""),
         )
 
+    # --- Security group ---
+    console.print()
+    with console.status("[bold green]Setting up security group..."):
+        security_group_id = _get_or_create_security_group(project_id, subnet_id) or ""
+    if security_group_id:
+        console.print(f"Security group: [green]{security_group_id}[/green]")
+    else:
+        console.print("[yellow]No security group configured — instances will have no firewall rules[/yellow]")
+
     # --- SSH key ---
     ssh_key = existing.get("NEBIUS_SSH_KEY", "")
     if ssh_key and Path(ssh_key).exists():
@@ -702,6 +802,7 @@ def configure_nebius():
         "NEBIUS_SUBNET_ID": subnet_id,
         "NEBIUS_SSH_KEY": ssh_key,
         "NEBIUS_FILESYSTEM_ID": filesystem_id,
+        "NEBIUS_SECURITY_GROUP_ID": security_group_id,
         "NEBIUS_SERVICE_ACCOUNT_ID": service_account_id,
         "NEBIUS_S3_ACCESS_KEY_ID": s3_key_id,
         "NEBIUS_S3_SECRET_KEY": s3_secret_key,

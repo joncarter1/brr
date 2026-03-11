@@ -246,7 +246,7 @@ def delete_github_ssh(region):
     return deleted
 
 
-def _nuke_nebius(project_id, progress, task, instances=True, disks=True, filesystems=True):
+def _nuke_nebius(project_id, progress, task, instances=True, disks=True, filesystems=True, security_groups=True):
     """Terminate Nebius resources in a project."""
     import asyncio
     from brr.nebius.nodes import _nebius_sdk
@@ -257,9 +257,12 @@ def _nuke_nebius(project_id, progress, task, instances=True, disks=True, filesys
             DiskServiceClient, ListDisksRequest, DeleteDiskRequest,
             FilesystemServiceClient, ListFilesystemsRequest, DeleteFilesystemRequest,
         )
+        from nebius.api.nebius.vpc.v1 import (
+            SecurityGroupServiceClient, ListSecurityGroupsRequest, DeleteSecurityGroupRequest,
+        )
 
         sdk = _nebius_sdk()
-        stats = {"instances": 0, "disks": 0, "filesystems": 0}
+        stats = {"instances": 0, "disks": 0, "filesystems": 0, "security_groups": 0}
 
         async with sdk:
             if instances:
@@ -327,6 +330,22 @@ def _nuke_nebius(project_id, progress, task, instances=True, disks=True, filesys
                     except Exception as e:
                         console.print(f"  [yellow]Failed to delete filesystem {fs.metadata.id}: {e}[/yellow]")
 
+            if security_groups:
+                progress.update(task, description="[red]Deleting Nebius security groups...[/red]")
+                sg_client = SecurityGroupServiceClient(sdk)
+                resp = await sg_client.list(ListSecurityGroupsRequest(parent_id=project_id))
+
+                for sg in resp.items:
+                    if sg.metadata.name != "brr-cluster":
+                        continue
+                    try:
+                        op = await sg_client.delete(DeleteSecurityGroupRequest(id=sg.metadata.id))
+                        await op.wait()
+                        stats["security_groups"] += 1
+                        console.print(f"  Deleted security group: [red]{sg.metadata.name}[/red]")
+                    except Exception as e:
+                        console.print(f"  [yellow]Failed to delete security group {sg.metadata.id}: {e}[/yellow]")
+
         return stats
 
     return asyncio.run(_nuke())
@@ -374,6 +393,7 @@ def nuke(force, region, provider):
             Choice(value="nebius_instances", name="Nebius — Compute instances", enabled=True),
             Choice(value="nebius_disks", name="Nebius — Disks", enabled=True),
             Choice(value="nebius_filesystems", name="Nebius — Shared filesystems", enabled=True),
+            Choice(value="nebius_security_groups", name="Nebius — Security groups", enabled=True),
         ])
 
     if force:
@@ -495,13 +515,20 @@ def nuke(force, region, provider):
                     instances="nebius_instances" in selected,
                     disks="nebius_disks" in selected,
                     filesystems="nebius_filesystems" in selected,
+                    security_groups="nebius_security_groups" in selected,
                 )
                 # Clear stale resource IDs from config
+                stale_nebius_keys = []
                 if nebius_stats.get("filesystems"):
-                    from brr.state import write_config
                     config["NEBIUS_FILESYSTEM_ID"] = ""
+                    stale_nebius_keys.append("NEBIUS_FILESYSTEM_ID")
+                if nebius_stats.get("security_groups"):
+                    config["NEBIUS_SECURITY_GROUP_ID"] = ""
+                    stale_nebius_keys.append("NEBIUS_SECURITY_GROUP_ID")
+                if stale_nebius_keys:
+                    from brr.state import write_config
                     write_config(config)
-                    console.print("[dim]Cleared NEBIUS_FILESYSTEM_ID from config[/dim]")
+                    console.print(f"[dim]Cleared {', '.join(stale_nebius_keys)} from config[/dim]")
 
         # Clean up local SSH config entries (scoped to targeted providers)
         has_instance_deletion = "aws_instances" in selected or "nebius_instances" in selected
@@ -562,6 +589,7 @@ def nuke(force, region, provider):
             ("instances", "Instances terminated"),
             ("disks", "Disks deleted"),
             ("filesystems", "Filesystems deleted"),
+            ("security_groups", "Security groups deleted"),
         ]:
             if key in nebius_stats:
                 lines.append(f"  {label}: {nebius_stats[key]}")

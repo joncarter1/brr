@@ -25,6 +25,8 @@ class NebiusNodeProvider(NodeProvider):
         self.filesystem_id = "" if not fs_id or "{{" in fs_id else fs_id
         sa_id = provider_config.get("service_account_id", "")
         self.service_account_id = "" if not sa_id or "{{" in sa_id else sa_id
+        sg_id = provider_config.get("security_group_id", "")
+        self.security_group_id = "" if not sg_id or "{{" in sg_id else sg_id
         # Unlike AWS, stopped Nebius instances still incur disk costs.
         # Default to deleting nodes on scale-down to avoid surprise charges.
         # Set cache_stopped_nodes: true in the provider config to keep them.
@@ -143,6 +145,7 @@ class NebiusNodeProvider(NodeProvider):
             NetworkInterfaceSpec,
             IPAddress,
             PublicIPAddress,
+            SecurityGroup,
         )
 
         # Reuse stopped instances before creating new ones (if caching enabled)
@@ -272,6 +275,7 @@ class NebiusNodeProvider(NodeProvider):
                         subnet_id=node_config["subnet_id"],
                         ip_address=IPAddress(),
                         public_ip_address=PublicIPAddress(),
+                        security_groups=[SecurityGroup(id=self.security_group_id)] if self.security_group_id else [],
                     ),
                 ],
                 cloud_init_user_data=cloud_init,

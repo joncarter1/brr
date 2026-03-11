@@ -148,25 +148,39 @@ class NebiusNodeProvider(NodeProvider):
             SecurityGroup,
         )
 
-        # Reuse stopped instances before creating new ones (if caching enabled)
+        # Always reuse stopped nodes (may exist from idle-shutdown)
         node_type = tags.get("ray-node-type", "worker")
         remaining = count
-        if self.cache_stopped_nodes:
-            try:
-                stopped = await self._find_stopped_nodes(node_type)
-                for inst_id in stopped:
-                    if remaining <= 0:
-                        break
-                    await self._start_instance(inst_id)
-                    await self._set_node_tags(inst_id, tags)
-                    inst = await self._fetch_instance(inst_id)
-                    if inst:
-                        with self.lock:
-                            self._cache[inst_id] = {"tags": dict(tags), "instance": inst}
-                    remaining -= 1
-            except Exception:
-                logger.warning("Failed to reuse stopped instances, creating new ones",
-                               exc_info=True)
+        excess_stopped = []
+        try:
+            stopped = await self._find_stopped_nodes(node_type)
+            if stopped:
+                logger.info(f"Found {len(stopped)} stopped {node_type} instance(s)")
+            restarted = 0
+            for inst_id in stopped:
+                if remaining <= 0:
+                    break
+                await self._start_instance(inst_id)
+                await self._set_node_tags(inst_id, tags)
+                inst = await self._fetch_instance(inst_id)
+                if inst:
+                    with self.lock:
+                        self._cache[inst_id] = {"tags": dict(tags), "instance": inst}
+                remaining -= 1
+                restarted += 1
+            excess_stopped = stopped[restarted:]
+        except Exception:
+            logger.warning("Failed to reuse stopped instances, creating new ones",
+                           exc_info=True)
+
+        # Clean up orphaned stopped nodes when not caching
+        if not self.cache_stopped_nodes and excess_stopped:
+            logger.info(f"Cleaning up {len(excess_stopped)} excess stopped instance(s)")
+            for inst_id in excess_stopped:
+                try:
+                    await self._delete_instance_and_disk(inst_id)
+                except Exception:
+                    logger.warning(f"Failed to clean up instance {inst_id}", exc_info=True)
 
         instance_client = self._instance_client()
         disk_client = self._disk_client()
@@ -318,31 +332,35 @@ class NebiusNodeProvider(NodeProvider):
             await operation.wait()
             logger.info(f"Stopped Nebius instance {node_id}")
         else:
-            from nebius.api.nebius.compute.v1 import (
-                DeleteInstanceRequest,
-                DeleteDiskRequest,
-            )
+            await self._delete_instance_and_disk(node_id)
 
-            # Fetch instance to find boot disk before deletion
-            inst = await self._fetch_instance(node_id)
-            boot_disk_id = None
-            if inst and inst.spec and inst.spec.boot_disk:
-                boot_disk_id = inst.spec.boot_disk.existing_disk.id
+    async def _delete_instance_and_disk(self, node_id):
+        """Delete an instance and its boot disk."""
+        from nebius.api.nebius.compute.v1 import (
+            DeleteInstanceRequest,
+            DeleteDiskRequest,
+        )
 
-            client = self._instance_client()
-            operation = await client.delete(DeleteInstanceRequest(id=node_id))
-            await operation.wait()
-            logger.info(f"Deleted Nebius instance {node_id}")
+        # Fetch instance to find boot disk before deletion
+        inst = await self._fetch_instance(node_id)
+        boot_disk_id = None
+        if inst and inst.spec and inst.spec.boot_disk:
+            boot_disk_id = inst.spec.boot_disk.existing_disk.id
 
-            # Clean up boot disk
-            if boot_disk_id:
-                try:
-                    disk_client = self._disk_client()
-                    disk_op = await disk_client.delete(DeleteDiskRequest(id=boot_disk_id))
-                    await disk_op.wait()
-                    logger.info(f"Deleted boot disk {boot_disk_id}")
-                except Exception:
-                    logger.warning(f"Failed to delete boot disk {boot_disk_id}", exc_info=True)
+        client = self._instance_client()
+        operation = await client.delete(DeleteInstanceRequest(id=node_id))
+        await operation.wait()
+        logger.info(f"Deleted Nebius instance {node_id}")
+
+        # Clean up boot disk
+        if boot_disk_id:
+            try:
+                disk_client = self._disk_client()
+                disk_op = await disk_client.delete(DeleteDiskRequest(id=boot_disk_id))
+                await disk_op.wait()
+                logger.info(f"Deleted boot disk {boot_disk_id}")
+            except Exception:
+                logger.warning(f"Failed to delete boot disk {boot_disk_id}", exc_info=True)
 
     def terminate_nodes(self, node_ids):
         for node_id in node_ids:

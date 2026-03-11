@@ -351,6 +351,21 @@ def up(template, overrides, no_config_cache, yes, dry_run, no_project):
 
     check_required(rendered, template_aliases)
 
+    # Nebius: require security_group_id in template
+    if provider == "nebius":
+        sg_id = rendered.get("provider", {}).get("security_group_id", "")
+        if not sg_id or "{{" in str(sg_id):
+            if not config.get("NEBIUS_SECURITY_GROUP_ID"):
+                raise click.UsageError(
+                    "Nebius security group not configured.\n"
+                    "  Run `brr configure nebius` to create one."
+                )
+            raise click.UsageError(
+                "Template is missing security_group_id in the provider section.\n"
+                "  Add this line under 'provider:' in your template:\n"
+                '    security_group_id: "{{NEBIUS_SECURITY_GROUP_ID}}"'
+            )
+
     cluster_name = _resolve_cluster_name(tpl_name, project_root)
     rendered["cluster_name"] = cluster_name
 

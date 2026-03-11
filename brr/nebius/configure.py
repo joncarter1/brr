@@ -146,7 +146,7 @@ def _get_or_create_security_group(project_id, subnet_id):
             ssh_ingress = RuleIngress(source_cidrs=["0.0.0.0/0"])
             ssh_ingress.destination_ports.append(22)
             ssh_op = await rule_client.create(CreateSecurityRuleRequest(
-                metadata=ResourceMetadata(parent_id=sg_id),
+                metadata=ResourceMetadata(parent_id=sg_id, name="ssh-ingress"),
                 spec=SecurityRuleSpec(
                     access=RuleAccessAction.ALLOW,
                     protocol=RuleProtocol.TCP,
@@ -158,7 +158,7 @@ def _get_or_create_security_group(project_id, subnet_id):
 
             # All traffic within the security group
             mesh_op = await rule_client.create(CreateSecurityRuleRequest(
-                metadata=ResourceMetadata(parent_id=sg_id),
+                metadata=ResourceMetadata(parent_id=sg_id, name="internal-mesh"),
                 spec=SecurityRuleSpec(
                     access=RuleAccessAction.ALLOW,
                     protocol=RuleProtocol.ANY,

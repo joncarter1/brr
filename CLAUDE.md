@@ -77,6 +77,14 @@ Key behaviors:
 - **`brr/nebius/node_provider.py`** — Custom Ray NodeProvider for autoscaling. Stop-instead-of-delete for cached nodes. Restarts stopped instances before creating new ones.
 - **`brr/nebius/templates/`** — Ray YAML templates: `cpu.yaml`, `h100.yaml`, `cpu-h100s.yaml`.
 
+### Backwards Compatibility
+
+brr is maturing and has users with existing project templates (`.brr/{provider}/*.yaml`) and config files (`~/.brr/config.env`). When adding new required config keys or template fields:
+
+- Add the new key to `_REQUIRED_KEYS` in `state.py` so `check_provider_configured` catches missing config.
+- Add a validation check in `cluster.py:up()` that detects stale project templates and raises a clear error with fix instructions (e.g. "add this line to your template" or "run `brr configure`").
+- Built-in templates are updated automatically, but project templates are user-owned copies — they must be told what to change.
+
 ### Known Pitfalls
 
 - `textwrap.dedent` with f-strings breaks when interpolated values have different indentation. Build shell scripts as concatenated string parts instead.

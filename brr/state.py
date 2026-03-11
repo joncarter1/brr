@@ -166,7 +166,7 @@ def read_merged_config(project_root=None):
 
 _REQUIRED_KEYS = {
     "aws": ["AWS_REGION", "AWS_KEY_NAME", "AWS_SECURITY_GROUP"],
-    "nebius": ["NEBIUS_PROJECT_ID", "NEBIUS_SUBNET_ID", "NEBIUS_SSH_KEY"],
+    "nebius": ["NEBIUS_PROJECT_ID", "NEBIUS_SUBNET_ID", "NEBIUS_SSH_KEY", "NEBIUS_SECURITY_GROUP_ID"],
 }
 
 

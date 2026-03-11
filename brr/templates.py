@@ -368,6 +368,17 @@ def prepare_staging(name, provider="aws", project_root=None):
         (staging / "github_key").write_text(Path(github_key).read_text())
         (staging / "github_key").chmod(0o600)
 
+    # Ray auth token: use local token if it exists, otherwise generate one
+    local_token = Path.home() / ".ray" / "auth_token"
+    if not local_token.exists():
+        import secrets
+        local_token.parent.mkdir(parents=True, exist_ok=True)
+        local_token.write_text(secrets.token_hex(32))
+        local_token.chmod(0o600)
+    staging_token = staging / "ray_auth_token"
+    staging_token.write_text(local_token.read_text())
+    staging_token.chmod(0o600)
+
     return staging
 
 
@@ -408,6 +419,11 @@ def inject_brr_infra(config, staging, git_info=None):
     config.setdefault("worker_start_ray_commands", [])
     config["head_start_ray_commands"].insert(0, _ensure_mount)
     config["worker_start_ray_commands"].insert(0, _ensure_mount)
+
+    # Ray auth token: copy to ~/.ray/ before ray starts
+    _copy_token = "mkdir -p ~/.ray && cp /tmp/brr/ray_auth_token ~/.ray/auth_token 2>/dev/null || true"
+    config["head_start_ray_commands"].insert(1, _copy_token)
+    config["worker_start_ray_commands"].insert(1, _copy_token)
 
     # For external providers (Nebius): make the staged node_provider module
     # importable. The .pth file in /tmp/brr/venv doesn't apply to uv project

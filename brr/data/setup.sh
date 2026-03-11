@@ -437,12 +437,19 @@ case ":$PATH:" in
 esac
 
 export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"
+export RAY_AUTH_MODE=token
 BRRSH
 # Also source from /etc/bash.bashrc for non-login bash shells (tmux)
 if ! grep -q 'profile.d/brr.sh' /etc/bash.bashrc 2>/dev/null; then
   echo '[ -f /etc/profile.d/brr.sh ] && . /etc/profile.d/brr.sh' | sudo tee -a /etc/bash.bashrc >/dev/null
 fi
 info "Installed /etc/profile.d/brr.sh"
+
+# Ray auth token — set in /etc/environment so it's available to all processes
+# (including non-interactive SSH commands like `ray start` on workers)
+if ! grep -q RAY_AUTH_MODE /etc/environment 2>/dev/null; then
+  echo 'RAY_AUTH_MODE=token' | sudo tee -a /etc/environment >/dev/null
+fi
 
 # --- Configure sshd to detect dead connections ---
 info "Configuring sshd ClientAlive settings"

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1
+
+### Fixed
+
+- Always reuse stopped Nebius nodes on `brr up` — previously, nodes stopped by idle-shutdown were orphaned because reuse was gated behind `cache_stopped_nodes`. Now reuse runs unconditionally, and excess stopped nodes are cleaned up when not caching.
+
 ## 0.10.0
 
 ### Added

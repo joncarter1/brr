@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.0
+
+### Fixed
+
+- Attach security group to restarted Nebius nodes — stopped nodes from before the SG feature were restarted without the security group, leaving Ray ports exposed.
+- Skip comment lines when warning about unresolved template placeholders — comments containing `{{VAR}}` examples no longer trigger false warnings.
+
 ## 0.10.1
 
 ### Fixed

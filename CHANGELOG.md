@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.1
+
+### Fixed
+
+- Warn when project template contains `cluster_name` — this field is ignored (auto-derived from project + template name) and can be safely removed.
+
 ## 0.11.0
 
 ### Fixed

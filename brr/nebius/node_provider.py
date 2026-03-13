@@ -116,6 +116,36 @@ class NebiusNodeProvider(NodeProvider):
             page_token = response.next_page_token
         return stopped
 
+    async def _ensure_security_group(self, node_id):
+        """Ensure the instance's network interface has our security group."""
+        from nebius.api.nebius.compute.v1 import (
+            GetInstanceRequest,
+            UpdateInstanceRequest,
+            SecurityGroup,
+        )
+        from nebius.api.nebius.common.v1 import ResourceMetadata
+
+        client = self._instance_client()
+        instance = await client.get(GetInstanceRequest(id=node_id))
+
+        iface = instance.spec.network_interfaces[0]
+        existing_sg_ids = {sg.id for sg in iface.security_groups}
+        if self.security_group_id in existing_sg_ids:
+            return
+
+        iface.security_groups.append(SecurityGroup(id=self.security_group_id))
+        operation = await client.update(UpdateInstanceRequest(
+            metadata=ResourceMetadata(
+                id=node_id,
+                parent_id=instance.metadata.parent_id,
+                name=instance.metadata.name,
+                labels=dict(instance.metadata.labels) if instance.metadata.labels else {},
+            ),
+            spec=instance.spec,
+        ))
+        await operation.wait()
+        logger.info(f"Attached security group to instance {node_id}")
+
     async def _start_instance(self, node_id):
         """Start a stopped instance."""
         from nebius.api.nebius.compute.v1 import StartInstanceRequest
@@ -160,6 +190,10 @@ class NebiusNodeProvider(NodeProvider):
             for inst_id in stopped:
                 if remaining <= 0:
                     break
+                # Ensure security group is attached before starting
+                # (may be missing on nodes created before SG feature)
+                if self.security_group_id:
+                    await self._ensure_security_group(inst_id)
                 await self._start_instance(inst_id)
                 await self._set_node_tags(inst_id, tags)
                 inst = await self._fetch_instance(inst_id)

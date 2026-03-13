@@ -114,8 +114,11 @@ def render(template_content, config):
     """Render {{VAR}} placeholders, then parse as YAML. Returns dict."""
     rendered = render_placeholders(template_content, config)
 
-    # Warn about unresolved placeholders
-    remaining = re.findall(r"\{\{(\w+)\}\}", rendered)
+    # Warn about unresolved placeholders (skip comment lines)
+    non_comment_lines = "\n".join(
+        line for line in rendered.splitlines() if not line.lstrip().startswith("#")
+    )
+    remaining = re.findall(r"\{\{(\w+)\}\}", non_comment_lines)
     if remaining:
         from rich.console import Console
         Console().print(

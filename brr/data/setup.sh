@@ -174,20 +174,15 @@ fi
 # mount and re-establishes the bind-mount so $HOME/code/ is available.
 sudo tee /usr/local/bin/brr-ensure-mount >/dev/null <<'ENSURE_MOUNT'
 #!/bin/bash
-[ -f /tmp/brr/config.env ] && source /tmp/brr/config.env
-
-# Exit early if no shared filesystem configured for this provider
-if [ "${PROVIDER:-aws}" = "nebius" ]; then
-  [ -z "${NEBIUS_FILESYSTEM_ID:-}" ] && exit 0
-else
-  [ -z "${EFS_ID:-}" ] && exit 0
-fi
-
 MOUNT_POINT="/shared"
 
-# Wait for the fstab mount (NFS/virtiofs) to complete
+# Exit early if no shared filesystem in fstab
+grep -q "$MOUNT_POINT" /etc/fstab 2>/dev/null || exit 0
+
+# Ensure the fstab mount is up (virtiofs may not auto-mount on reboot)
 for i in $(seq 1 60); do
   mountpoint -q "$MOUNT_POINT" 2>/dev/null && break
+  sudo mount "$MOUNT_POINT" 2>/dev/null || true
   echo "[brr-ensure-mount] Waiting for $MOUNT_POINT ($i/60)..."
   sleep 5
 done
@@ -198,7 +193,7 @@ if ! mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
 fi
 
 # Re-establish home bind-mount if needed
-if ! mountpoint -q "$HOME" 2>/dev/null; then
+if [ -d "$MOUNT_POINT/home/ubuntu" ] && ! mountpoint -q "$HOME" 2>/dev/null; then
   sudo mount --bind "$MOUNT_POINT/home/ubuntu" "$HOME"
   echo "[brr-ensure-mount] Home bind-mounted from $MOUNT_POINT"
 fi

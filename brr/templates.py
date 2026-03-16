@@ -461,14 +461,6 @@ def inject_brr_infra(config, staging, git_info=None):
     config["head_start_ray_commands"].insert(1, _copy_token)
     config["worker_start_ray_commands"].insert(1, _copy_token)
 
-    # For external providers (Nebius): make the staged node_provider module
-    # importable. The .pth file in /tmp/brr/venv doesn't apply to uv project
-    # environments, so we set PYTHONPATH explicitly.
-    if config.get("provider", {}).get("type") == "external":
-        _pythonpath = "export PYTHONPATH=/tmp/brr/provider_lib:${PYTHONPATH:-}"
-        config["head_start_ray_commands"].insert(1, _pythonpath)
-        config["worker_start_ray_commands"].insert(1, _pythonpath)
-
     # For external providers: embed SSH public key content into node_configs
     # so the NodeProvider can inject it via cloud-init. We embed the content
     # (not a file path) so it works both locally and on the head node.

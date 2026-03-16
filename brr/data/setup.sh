@@ -349,10 +349,19 @@ if [ "${PROVIDER:-}" = "nebius" ]; then
     info "Nebius SDK already installed in the virtual environment"
   fi
 
-  # Make brr.nebius.node_provider importable via .pth file
-  for sp in "$VENVDIR"/lib/python3.*/site-packages; do
-    echo "/tmp/brr/provider_lib" > "$sp/brr_provider.pth"
-  done
+  # Copy node provider to a persistent location (/tmp is cleared on reboot).
+  if [ -d "/tmp/brr/provider_lib" ]; then
+    sudo mkdir -p /opt/brr
+    sudo cp -r /tmp/brr/provider_lib /opt/brr/provider_lib
+    sudo chmod -R a+rX /opt/brr/provider_lib
+    info "Installed node provider to /opt/brr/provider_lib"
+  fi
+
+  # Set PYTHONPATH in /etc/environment so it's available to all processes
+  # (including non-interactive SSH commands like `ray start`).
+  if ! grep -q 'PYTHONPATH.*/opt/brr/provider_lib' /etc/environment 2>/dev/null; then
+    echo 'PYTHONPATH=/opt/brr/provider_lib' | sudo tee -a /etc/environment >/dev/null
+  fi
 
   # Place credentials where the SDK expects them
   if [ -f "/tmp/brr/nebius_credentials.json" ]; then

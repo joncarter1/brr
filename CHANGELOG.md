@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.2
+
+### Fixed
+
+- Fix `brr-ensure-mount` failing on cached Nebius node restarts — `/tmp/brr/config.env` doesn't survive reboot, so detect the shared filesystem from fstab instead. Also actively retries mount for virtiofs entries that don't auto-mount on reboot.
+
 ## 0.11.1
 
 ### Fixed

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.4
+
+### Fixed
+
+- Fix PYTHONPATH not reaching `ray start` on Nebius clusters — Ray's SSH multiplexing (`ControlMaster`) bypasses PAM on subsequent commands, so `/etc/environment` written during setup is invisible to start commands. Now inlines `export PYTHONPATH` directly on `ray start` command lines.
+
+### Added
+
+- Support `spot=true` override for Nebius clusters — creates preemptible instances with stop-on-preemption policy.
+
 ## 0.11.3
 
 ### Fixed

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.3
+
+### Fixed
+
+- Fix Nebius node provider not importable on cached node restarts — `/tmp` is cleared on reboot (losing provider_lib and the .pth file), and the `PYTHONPATH` export in `start_ray_commands` didn't persist across SSH sessions. Now installs provider_lib to `/opt/brr` and sets `PYTHONPATH` via `/etc/environment`.
+
 ## 0.11.2
 
 ### Fixed

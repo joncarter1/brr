@@ -167,6 +167,7 @@ class NebiusNodeProvider(NodeProvider):
             SourceImageFamily,
             InstanceSpec,
             InstanceRecoveryPolicy,
+            PreemptibleSpec,
             ResourcesSpec,
             AttachedDiskSpec,
             ExistingDisk,
@@ -330,6 +331,13 @@ class NebiusNodeProvider(NodeProvider):
             )
             if self.service_account_id:
                 spec_kwargs["service_account_id"] = self.service_account_id
+            preemptible = node_config.get("preemptible")
+            if preemptible:
+                priority = preemptible if isinstance(preemptible, int) else 1
+                spec_kwargs["preemptible"] = PreemptibleSpec(
+                    on_preemption=PreemptibleSpec.PreemptionPolicy.STOP,
+                    priority=priority,
+                )
             spec = InstanceSpec(**spec_kwargs)
 
             op = await instance_client.create(CreateInstanceRequest(

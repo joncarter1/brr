@@ -266,11 +266,23 @@ def apply_overrides(config, overrides, template_aliases=None):
 
         # Special: spot toggle
         if key == "spot":
-            head_config = config["available_node_types"]["ray.head.default"]["node_config"]
-            if value.lower() in ("true", "yes", "1"):
-                head_config["InstanceMarketOptions"] = {"MarketType": "spot"}
+            is_nebius = config.get("provider", {}).get("type") == "external"
+            enabled = value.lower() in ("true", "yes", "1")
+
+            if is_nebius:
+                for nt in config.get("available_node_types", {}).values():
+                    nc = nt.get("node_config", {})
+                    if enabled:
+                        nc["preemptible"] = True
+                    else:
+                        nc.pop("preemptible", None)
             else:
-                head_config.pop("InstanceMarketOptions", None)
+                # AWS: existing behavior
+                head_config = config["available_node_types"]["ray.head.default"]["node_config"]
+                if enabled:
+                    head_config["InstanceMarketOptions"] = {"MarketType": "spot"}
+                else:
+                    head_config.pop("InstanceMarketOptions", None)
             continue
 
         # Special: capacity reservation
@@ -460,6 +472,19 @@ def inject_brr_infra(config, staging, git_info=None):
     _copy_token = "mkdir -p ~/.ray && cp /tmp/brr/ray_auth_token ~/.ray/auth_token 2>/dev/null || true"
     config["head_start_ray_commands"].insert(1, _copy_token)
     config["worker_start_ray_commands"].insert(1, _copy_token)
+
+    # For external providers (Nebius): ensure the node provider module is
+    # importable by ray start. We use `export` so the PYTHONPATH persists
+    # across `&&` chains (e.g. `cd ... && uv run ray start`). /etc/environment
+    # is unreliable here — Ray uses SSH multiplexing (ControlMaster) so PAM
+    # only fires once per connection, not per command.
+    if config.get("provider", {}).get("type") == "external":
+        _pp = "export PYTHONPATH=/opt/brr/provider_lib${PYTHONPATH:+:$PYTHONPATH}"
+        for key in ("head_start_ray_commands", "worker_start_ray_commands"):
+            config[key] = [
+                f"{_pp} && {cmd}" if "ray start" in cmd else cmd
+                for cmd in config[key]
+            ]
 
     # For external providers: embed SSH public key content into node_configs
     # so the NodeProvider can inject it via cloud-init. We embed the content

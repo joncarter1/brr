@@ -23,8 +23,12 @@ Follow these steps in order. Stop and report if any step fails.
 
 ### 1. Pre-flight checks
 
-- Run `git status` — abort if there are uncommitted changes.
-- Run `git diff --cached` — abort if there are staged changes.
+- Run `git status` to check for uncommitted or staged changes.
+- If there are unstaged or staged changes:
+  - Stage all modified and untracked files relevant to the project (use `git add` with specific files, not `-A`).
+  - Commit with a descriptive message summarizing the changes. Include `Co-Authored-By` trailer.
+  - Push to the current branch: `git push`.
+- Confirm working tree is now clean before proceeding.
 
 ### 2. Run linters and tests
 

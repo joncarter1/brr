@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.1
+
+### Fixed
+
+- Validate Nebius `node_config` keys at `brr up` time — unknown keys (e.g. `premptible` instead of `preemptible`) now raise an immediate error instead of being silently ignored.
+
 ## 0.12.0
 
 ### Added

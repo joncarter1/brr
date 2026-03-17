@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.12.0
+
+### Added
+
+- Configurable idle shutdown on head nodes — `idle_shutdown_head` option in `_brr` template section controls whether the head node runs the idle-shutdown daemon (defaults to `true`, set to `false` to keep head nodes alive indefinitely).
+
+### Fixed
+
+- Skip restarting stopped preemptible Nebius instances — preempted instances likely lack capacity and `operation.wait()` would block indefinitely. Creates fresh instances instead.
+- Add apt retry config (3 retries) to setup.sh to handle transient package mirror timeouts during node setup.
+
 ## 0.11.4
 
 ### Fixed

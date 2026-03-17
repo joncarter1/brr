@@ -11,6 +11,9 @@
 #   image_family — OS image (ubuntu22.04-driverless, ubuntu22.04-cuda12)
 #   resources    — required: tell Ray what the node has (CPU: N, GPU: N)
 
+_brr:
+  idle_shutdown_head: true
+
 max_workers: 2
 idle_timeout_minutes: 5
 

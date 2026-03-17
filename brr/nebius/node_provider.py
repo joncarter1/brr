@@ -179,37 +179,46 @@ class NebiusNodeProvider(NodeProvider):
             SecurityGroup,
         )
 
-        # Always reuse stopped nodes (may exist from idle-shutdown)
+        # Reuse stopped nodes — but not preemptible ones, which may have been
+        # preempted due to capacity and are unlikely to restart successfully.
         node_type = tags.get("ray-node-type", "worker")
         remaining = count
         excess_stopped = []
+        is_preemptible = bool(node_config.get("preemptible"))
         try:
             stopped = await self._find_stopped_nodes(node_type)
-            if stopped:
-                logger.info(f"Found {len(stopped)} stopped {node_type} instance(s)")
-            restarted = 0
-            for inst_id in stopped:
-                if remaining <= 0:
-                    break
-                # Ensure security group is attached before starting
-                # (may be missing on nodes created before SG feature)
-                if self.security_group_id:
-                    await self._ensure_security_group(inst_id)
-                await self._start_instance(inst_id)
-                await self._set_node_tags(inst_id, tags)
-                inst = await self._fetch_instance(inst_id)
-                if inst:
-                    with self.lock:
-                        self._cache[inst_id] = {"tags": dict(tags), "instance": inst}
-                remaining -= 1
-                restarted += 1
-            excess_stopped = stopped[restarted:]
+            if is_preemptible:
+                # Don't attempt restart — preempted instances likely lack capacity,
+                # and operation.wait() could block for a long time.
+                if stopped:
+                    logger.info(f"Skipping {len(stopped)} stopped preemptible instance(s), creating new")
+                excess_stopped = stopped
+            else:
+                if stopped:
+                    logger.info(f"Found {len(stopped)} stopped {node_type} instance(s)")
+                restarted = 0
+                for inst_id in stopped:
+                    if remaining <= 0:
+                        break
+                    # Ensure security group is attached before starting
+                    # (may be missing on nodes created before SG feature)
+                    if self.security_group_id:
+                        await self._ensure_security_group(inst_id)
+                    await self._start_instance(inst_id)
+                    await self._set_node_tags(inst_id, tags)
+                    inst = await self._fetch_instance(inst_id)
+                    if inst:
+                        with self.lock:
+                            self._cache[inst_id] = {"tags": dict(tags), "instance": inst}
+                    remaining -= 1
+                    restarted += 1
+                excess_stopped = stopped[restarted:]
         except Exception:
             logger.warning("Failed to reuse stopped instances, creating new ones",
                            exc_info=True)
 
-        # Clean up orphaned stopped nodes when not caching
-        if not self.cache_stopped_nodes and excess_stopped:
+        # Clean up orphaned stopped nodes when not caching (or always for preemptible)
+        if (is_preemptible or not self.cache_stopped_nodes) and excess_stopped:
             logger.info(f"Cleaning up {len(excess_stopped)} excess stopped instance(s)")
             for inst_id in excess_stopped:
                 try:

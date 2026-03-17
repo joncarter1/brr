@@ -206,7 +206,10 @@ def extract_template_aliases(config):
 def _resolve_alias(key, template_aliases):
     """Resolve a key to a dot-path. Checks template aliases, then global args."""
     if template_aliases and key in template_aliases:
-        return template_aliases[key]
+        value = template_aliases[key]
+        if isinstance(value, str):
+            return value
+        # Non-string values (e.g. idle_shutdown_head: false) are brr metadata, not aliases
     if key in GLOBAL_ARGS and GLOBAL_ARGS[key]["path"]:
         return GLOBAL_ARGS[key]["path"]
     return key
@@ -234,7 +237,8 @@ def check_required(config, template_aliases=None):
     reverse = {}
     if template_aliases:
         for name, path in template_aliases.items():
-            reverse[path] = name
+            if isinstance(path, str):
+                reverse[path] = name
     for name, info in GLOBAL_ARGS.items():
         if info["path"]:
             reverse[info["path"]] = name
@@ -430,11 +434,12 @@ def prepare_staging(name, provider="aws", project_root=None):
     return staging
 
 
-def inject_brr_infra(config, staging, git_info=None):
+def inject_brr_infra(config, staging, git_info=None, brr_meta=None):
     """Inject file_mounts, initialization_commands, and setup_commands.
 
     Merges with any existing values from the template.
     If git_info is provided, sets up git clone of the project repo on the cluster.
+    If brr_meta has idle_shutdown_head=False, disables the idle-shutdown daemon on the head node.
     """
     # initialization_commands: ensure pip exists before Ray's internal setup
     config.setdefault("initialization_commands", [])
@@ -458,6 +463,15 @@ def inject_brr_infra(config, staging, git_info=None):
     config.setdefault("head_setup_commands", [])
     config.setdefault("worker_setup_commands", [])
     config.setdefault("cluster_synced_files", [])
+
+    # Disable idle-shutdown on head node if requested
+    if brr_meta and brr_meta.get("idle_shutdown_head") is False:
+        config["head_setup_commands"].insert(
+            0,
+            "sudo systemctl stop idle-shutdown 2>/dev/null; "
+            "sudo systemctl disable idle-shutdown 2>/dev/null; "
+            "echo '[brr] idle-shutdown disabled on head node'",
+        )
 
     # Ensure shared filesystem mounts are ready before ray starts.
     # On cached node restarts, Ray skips setup_commands — the fstab NFS mount

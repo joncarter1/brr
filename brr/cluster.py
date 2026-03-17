@@ -390,7 +390,7 @@ def up(template, overrides, no_config_cache, yes, dry_run, no_project):
             _validate_git_for_sync(project_root, git_info, config)
 
     staging = prepare_staging(cluster_name, provider, project_root=project_root)
-    inject_brr_infra(rendered, staging, git_info=git_info)
+    inject_brr_infra(rendered, staging, git_info=git_info, brr_meta=template_aliases)
 
     # Apply baked images if available (works for both AWS and Nebius)
     apply_baked_images(rendered, config)
@@ -852,7 +852,8 @@ def show(template, no_project):
     if required_paths:
         reverse = {}
         for name, path in template_aliases.items():
-            reverse[path] = name
+            if isinstance(path, str):
+                reverse[path] = name
         for name, info in GLOBAL_ARGS.items():
             if info["path"]:
                 reverse[info["path"]] = name
@@ -867,7 +868,7 @@ def show(template, no_project):
         console.print()
 
     non_required_aliases = {k: v for k, v in template_aliases.items()
-                           if v not in required_paths}
+                           if isinstance(v, str) and v not in required_paths}
     if non_required_aliases:
         console.print("[bold]Template overrides:[/bold]")
         for name, path in non_required_aliases.items():

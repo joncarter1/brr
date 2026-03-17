@@ -15,6 +15,9 @@ if [ -d /etc/needrestart/conf.d ]; then
   echo "\$nrconf{restart} = 'a';" | sudo tee /etc/needrestart/conf.d/no-prompt.conf >/dev/null
 fi
 
+# Retry failed apt downloads up to 3 times (avoids transient mirror timeouts)
+echo 'Acquire::Retries "3";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+
 # Source config if available (copied to remote via file_mounts)
 if [ -f "/tmp/brr/config.env" ]; then
   source "/tmp/brr/config.env"

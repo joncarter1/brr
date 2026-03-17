@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.2
+
+### Fixed
+
+- Bump Nebius CPU template boot disk size from 50GB to 100GB.
+
 ## 0.12.1
 
 ### Fixed

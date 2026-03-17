@@ -155,7 +155,18 @@ class NebiusNodeProvider(NodeProvider):
         await operation.wait()
         logger.info(f"Restarted stopped Nebius instance {node_id}")
 
+    _KNOWN_NODE_CONFIG_KEYS = {
+        "platform_id", "preset_id", "image_family", "baked_image_id",
+        "subnet_id", "disk_size_gb", "disk_type",
+        "preemptible", "ssh_public_key",
+    }
+
     def create_node(self, node_config, tags, count):
+        unknown = set(node_config) - self._KNOWN_NODE_CONFIG_KEYS
+        if unknown:
+            raise ValueError(
+                f"Unknown node_config keys (typo?): {', '.join(sorted(unknown))}"
+            )
         self._run(self._create_nodes(node_config, tags, count))
 
     async def _create_nodes(self, node_config, tags, count):

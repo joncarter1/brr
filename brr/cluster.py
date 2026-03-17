@@ -366,6 +366,17 @@ def up(template, overrides, no_config_cache, yes, dry_run, no_project):
                 '    security_group_id: "{{NEBIUS_SECURITY_GROUP_ID}}"'
             )
 
+    # Nebius: validate node_config keys to catch typos early
+    if provider == "nebius":
+        from brr.nebius.node_provider import NebiusNodeProvider
+        for nt_name, nt in rendered.get("available_node_types", {}).items():
+            nc = nt.get("node_config", {})
+            unknown = set(nc) - NebiusNodeProvider._KNOWN_NODE_CONFIG_KEYS
+            if unknown:
+                raise click.UsageError(
+                    f"Unknown node_config keys in {nt_name} (typo?): {', '.join(sorted(unknown))}"
+                )
+
     if project_root and "cluster_name" in rendered:
         console.print(
             "[yellow]Warning: 'cluster_name' in your project template is ignored "

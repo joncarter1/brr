@@ -41,7 +41,7 @@ available_node_types:
       preset_id: 8vcpu-32gb
       image_family: ubuntu22.04-driverless
       subnet_id: "{{NEBIUS_SUBNET_ID}}"
-      disk_size_gb: 50
+      disk_size_gb: 100
       disk_type: network-ssd
   ray.worker.default:
     min_workers: 0

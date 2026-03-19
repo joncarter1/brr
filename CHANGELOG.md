@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.0
+
+### Fixed
+
+- Move Python venv and uv-managed interpreters from `/tmp` to `/opt` so they survive reboots — fixes cached node restarts where Ray skips `setup_commands` but `/tmp` is cleared.
+
 ## 0.12.2
 
 ### Fixed

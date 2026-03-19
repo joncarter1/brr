@@ -346,12 +346,6 @@ fi
 sudo ln -sf "$VENVDIR/bin/pip" /usr/local/bin/pip
 sudo ln -sf "$VENVDIR/bin/pip3" /usr/local/bin/pip3
 
-# Backwards compat: old project templates may reference /tmp/brr/venv
-if [ ! -e "/tmp/brr/venv" ] && [ -d "$VENVDIR" ]; then
-  mkdir -p /tmp/brr
-  ln -sf "$VENVDIR" /tmp/brr/venv
-fi
-
 # --- Nebius provider support ---
 if [ "${PROVIDER:-}" = "nebius" ]; then
   # Install Nebius SDK so the node provider can create workers

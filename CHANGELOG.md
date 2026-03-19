@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.1
+
+### Fixed
+
+- Skip creating Python symlinks in `~/.local/bin` during `uv python install` (`--no-bin`) — avoids conflicts with brr's custom python wrappers.
+- Remove `_BRR_ENV_LOADED` source guard from `/etc/profile.d/brr.sh` so environment variables update on re-source after `brr up`.
+
 ## 0.13.0
 
 ### Fixed

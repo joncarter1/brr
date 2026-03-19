@@ -306,7 +306,7 @@ sudo mkdir -p /opt/brr /opt/uv /opt/venvs
 sudo chown "$USER:$USER" /opt/brr /opt/uv /opt/venvs
 
 # Pre-install Python versions
-"$UV_REAL" python install 3.10 3.11 3.12 3.13
+"$UV_REAL" python install --no-bin 3.10 3.11 3.12 3.13
 
 # Create virtual environment at /opt/brr/venv (persistent across reboots)
 VENVDIR="/opt/brr/venv"
@@ -439,9 +439,6 @@ info "Installed uv/python wrappers in $UV_DIR"
 # Shell environment — env vars (sourced by login/interactive shells)
 sudo tee /etc/profile.d/brr.sh >/dev/null <<'BRRSH'
 # brr shell environment
-[ -n "$_BRR_ENV_LOADED" ] && return
-export _BRR_ENV_LOADED=1
-
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) export PATH="$HOME/.local/bin:$PATH" ;;

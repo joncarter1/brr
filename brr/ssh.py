@@ -81,7 +81,7 @@ def get_ray_status(head_ip, ssh_key):
         "ssh", "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
         "-i", ssh_key, f"ubuntu@{head_ip}",
-        'source /tmp/brr/venv/bin/activate && python -c "'
+        'source /opt/brr/venv/bin/activate && python -c "'
         "import ray, json; "
         "ray.init(address='auto', ignore_reinit_error=True); "
         "nodes = [n for n in ray.nodes() if n['Alive']]; "

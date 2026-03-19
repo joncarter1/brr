@@ -136,12 +136,12 @@ uv is installed to `~/.local/lib/` (via `UV_INSTALL_DIR`) with a routing wrapper
 | Environment variable | Value | Purpose |
 | :--- | :--- | :--- |
 | `UV_CACHE_DIR` | `/tmp/uv` | Download cache (per-instance) |
-| `UV_PYTHON_INSTALL_DIR` | `/tmp/uv/python` | Managed Python builds (per-instance) |
-| `UV_PROJECT_ENVIRONMENT` | `/tmp/venvs/{project}` | Project venvs (per-instance) |
+| `UV_PYTHON_INSTALL_DIR` | `/opt/uv/python` | Managed Python builds (persistent) |
+| `UV_PROJECT_ENVIRONMENT` | `/opt/venvs/{project}` | Project venvs (persistent) |
 
-Both the binary and wrapper persist on EFS so new instances reuse them without reinstalling. `uv self update` updates the binary at `~/.local/lib/uv` without touching the wrapper. Only caches, Python builds, and venvs are per-instance (rebuilt on boot from lockfiles).
+Both the binary and wrapper persist on EFS so new instances reuse them without reinstalling. `uv self update` updates the binary at `~/.local/lib/uv` without touching the wrapper. Only the download cache (`/tmp/uv`) is per-instance; Python builds and venvs persist at `/opt/` so they survive reboots (important for cached node restarts).
 
-For uv-managed projects, Ray runs via `uv run ray start` from the project directory — add `ray[default]` and your cloud SDK (e.g. `boto3`) to your project's dependencies. For non-uv clusters, Ray runs from a standalone venv at `/tmp/brr/venv`.
+For uv-managed projects, Ray runs via `uv run ray start` from the project directory — add `ray[default]` and your cloud SDK (e.g. `boto3`) to your project's dependencies. For non-uv clusters, Ray runs from a standalone venv at `/opt/brr/venv`.
 
 ### AI coding tools
 

@@ -117,7 +117,7 @@ def init_cmd():
             if is_uv_project:
                 project_dir = f"$HOME/code/{repo_name}"
                 content = content.replace(
-                    "source /tmp/brr/venv/bin/activate && ",
+                    "source /opt/brr/venv/bin/activate && ",
                     f"cd {project_dir} && uv run ",
                 )
             dest = provider_dir / f"{project_name}.yaml"
@@ -156,7 +156,7 @@ fi
 # Add project-specific dependencies below.
 set -Eeuo pipefail
 
-source "/tmp/brr/venv/bin/activate"
+source "/opt/brr/venv/bin/activate"
 # uv pip install torch
 # uv pip install jax[cuda12]
 """

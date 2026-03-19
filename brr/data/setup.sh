@@ -297,15 +297,19 @@ else
   info "uv already installed: ($("$UV_REAL" --version 2>/dev/null || true))"
 fi
 
-# Route uv storage to local disk (EFS doesn't support flock).
+# Route uv cache to local disk (EFS doesn't support flock).
 export UV_CACHE_DIR="/tmp/uv"
-export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"
+export UV_PYTHON_INSTALL_DIR="/opt/uv/python"
 
-# Pre-install Python versions (avoids hangs later). TODO: Identify root cause of hanging.
+# Persistent directories for venv and Python installs (survive reboot for cached node restarts)
+sudo mkdir -p /opt/brr /opt/uv /opt/venvs
+sudo chown "$USER:$USER" /opt/brr /opt/uv /opt/venvs
+
+# Pre-install Python versions
 "$UV_REAL" python install 3.10 3.11 3.12 3.13
 
-# Create virtual environment at /tmp/brr/venv if absent (instance-local, not in home)
-VENVDIR="/tmp/brr/venv"
+# Create virtual environment at /opt/brr/venv (persistent across reboots)
+VENVDIR="/opt/brr/venv"
 _WANT_PY="${PYTHON_VERSION:-3.11}"
 if [ ! -d "$VENVDIR" ]; then
   info "Creating Python ${_WANT_PY} virtual environment at $VENVDIR"
@@ -341,6 +345,12 @@ if [ ! -x "$VENVDIR/bin/pip" ]; then
 fi
 sudo ln -sf "$VENVDIR/bin/pip" /usr/local/bin/pip
 sudo ln -sf "$VENVDIR/bin/pip3" /usr/local/bin/pip3
+
+# Backwards compat: old project templates may reference /tmp/brr/venv
+if [ ! -e "/tmp/brr/venv" ] && [ -d "$VENVDIR" ]; then
+  mkdir -p /tmp/brr
+  ln -sf "$VENVDIR" /tmp/brr/venv
+fi
 
 # --- Nebius provider support ---
 if [ "${PROVIDER:-}" = "nebius" ]; then
@@ -398,10 +408,10 @@ mkdir -p "$UV_DIR"
 cat > "$UV_DIR/uv" <<'UVWRAP'
 #!/bin/bash
 export UV_CACHE_DIR="/tmp/uv"
-export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"
+export UV_PYTHON_INSTALL_DIR="/opt/uv/python"
 _repo_root=$(timeout 3 git rev-parse --show-toplevel 2>/dev/null)
 if [ -n "$_repo_root" ]; then
-  _venv="/tmp/venvs/$(basename "$_repo_root")"
+  _venv="/opt/venvs/$(basename "$_repo_root")"
   export UV_PROJECT_ENVIRONMENT="$_venv"
   mkdir -p "$_venv"
   if [ -f "$_venv/pyvenv.cfg" ]; then
@@ -426,7 +436,7 @@ PYWRAP
 done
 
 # Symlink system tools from base venv into ~/.local/bin so they're available
-# without putting all of /tmp/brr/venv/bin on PATH (which would shadow our wrappers).
+# without putting all of /opt/brr/venv/bin on PATH (which would shadow our wrappers).
 for tool in ray pip; do
   [ -x "$VENVDIR/bin/$tool" ] && ln -sf "$VENVDIR/bin/$tool" "$UV_DIR/$tool"
 done
@@ -443,7 +453,7 @@ case ":$PATH:" in
   *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac
 
-export UV_PYTHON_INSTALL_DIR="/tmp/uv/python"
+export UV_PYTHON_INSTALL_DIR="/opt/uv/python"
 export RAY_AUTH_MODE=token
 BRRSH
 # Also source from /etc/bash.bashrc for non-login bash shells (tmux)

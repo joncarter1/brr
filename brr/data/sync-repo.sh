@@ -1,11 +1,11 @@
 #!/bin/bash
 # Clone a project repo on the cluster using metadata from repo_info.json.
-# Written to /tmp/brr/ by brr's inject_brr_infra, runs as a setup_command.
+# Written to /opt/brr/staging/ by brr's inject_brr_infra, runs as a setup_command.
 # No-ops if repo_info.json is absent (non-git projects or re-deploys).
 
 set -euo pipefail
 
-REPO_INFO="/tmp/brr/repo_info.json"
+REPO_INFO="/opt/brr/staging/repo_info.json"
 if [ ! -f "$REPO_INFO" ]; then
     exit 0
 fi

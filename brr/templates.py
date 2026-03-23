@@ -20,6 +20,7 @@ GLOBAL_ARGS = {
         "path": "available_node_types.ray.head.default.node_config.ImageId",
         "help": "Head node AMI",
     },
+    "head_disk_gb": {"path": None, "help": "Head node disk size in GB"},
     "spot": {"path": None, "help": "Enable spot pricing (true/false)"},
     "capacity_reservation": {"path": None, "help": "Capacity reservation ID for capacity-block"},
 }
@@ -262,11 +263,34 @@ def apply_overrides(config, overrides, template_aliases=None):
 
     Resolution: template aliases → global args → raw dot-notation.
     Special handling: spot=true/false toggles InstanceMarketOptions.
+    Special handling: idle_shutdown_head=true/false sets brr metadata.
     """
     for override in overrides:
         if "=" not in override:
             raise ValueError(f"Invalid override format: '{override}' (expected key=value)")
         key, value = override.split("=", 1)
+
+        # Special: _brr metadata (idle_shutdown_head, etc.)
+        if key.startswith("_brr.") or (
+            template_aliases is not None and key in template_aliases and not isinstance(template_aliases[key], str)
+        ):
+            meta_key = key.removeprefix("_brr.") if key.startswith("_brr.") else key
+            if template_aliases is not None:
+                template_aliases[meta_key] = _coerce_value(value)
+            continue
+
+        # Special: head disk size
+        if key == "head_disk_gb":
+            size = int(value)
+            head_nc = config["available_node_types"]["ray.head.default"]["node_config"]
+            # AWS: BlockDeviceMappings
+            for bdm in head_nc.get("BlockDeviceMappings", []):
+                if "Ebs" in bdm:
+                    bdm["Ebs"]["VolumeSize"] = size
+            # Nebius: disk_size_gb
+            if "disk_size_gb" in head_nc:
+                head_nc["disk_size_gb"] = size
+            continue
 
         # Special: spot toggle
         if key == "spot":
@@ -357,7 +381,7 @@ def prepare_staging(name, provider="aws", project_root=None):
     # and other config variables (global setup.sh sources it separately).
     _config_preamble = (
         '# Source config (auto-injected by brr)\n'
-        'if [ -f "/tmp/brr/config.env" ]; then source "/tmp/brr/config.env"; fi\n'
+        'if [ -f "/opt/brr/staging/config.env" ]; then source "/opt/brr/staging/config.env"; fi\n'
     )
     project_setup_staged = False
     if project_root is not None:
@@ -441,22 +465,26 @@ def inject_brr_infra(config, staging, git_info=None, brr_meta=None):
     If git_info is provided, sets up git clone of the project repo on the cluster.
     If brr_meta has idle_shutdown_head=False, disables the idle-shutdown daemon on the head node.
     """
-    # initialization_commands: ensure pip exists before Ray's internal setup
+    # initialization_commands: ensure staging dir + pip exist before Ray's internal setup
     config.setdefault("initialization_commands", [])
     config["initialization_commands"].insert(
-        0, "export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a && sudo -E apt-get update -y && sudo -E apt-get install -y python3-pip"
+        0, "sudo mkdir -p /opt/brr/staging && sudo chown $(id -u):$(id -g) /opt/brr/staging"
+    )
+    config["initialization_commands"].insert(
+        1, "export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a && sudo -E apt-get update -y && sudo -E apt-get install -y python3-pip"
     )
 
-    # file_mounts: staging dir -> /tmp/brr/ on remote.  /tmp is always
-    # user-writable so Ray's internal mkdir (no sudo) works fine.
+    # file_mounts: staging dir -> /opt/brr/staging/ on remote.
+    # /opt/brr/ survives reboots (created by initialization_commands above
+    # for fresh instances, and persists for cached node restarts).
     config.setdefault("file_mounts", {})
-    config["file_mounts"]["/tmp/brr/"] = str(staging) + "/"
+    config["file_mounts"]["/opt/brr/staging/"] = str(staging) + "/"
 
     # setup_commands: prepend our setup scripts (global, then project)
     config.setdefault("setup_commands", [])
-    config["setup_commands"].insert(0, "bash /tmp/brr/setup.sh")
+    config["setup_commands"].insert(0, "bash /opt/brr/staging/setup.sh")
     if (staging / "project-setup.sh").exists():
-        config["setup_commands"].insert(1, "bash /tmp/brr/project-setup.sh")
+        config["setup_commands"].insert(1, "bash /opt/brr/staging/project-setup.sh")
 
     # Ray expects these keys to exist (built-in providers fill them via
     # fillout_defaults, but external providers don't get that treatment)
@@ -483,7 +511,7 @@ def inject_brr_infra(config, staging, git_info=None, brr_meta=None):
     config["worker_start_ray_commands"].insert(0, _ensure_mount)
 
     # Ray auth token: copy to ~/.ray/ before ray starts
-    _copy_token = "mkdir -p ~/.ray && cp /tmp/brr/ray_auth_token ~/.ray/auth_token 2>/dev/null || true"
+    _copy_token = "mkdir -p ~/.ray && cp /opt/brr/staging/ray_auth_token ~/.ray/auth_token 2>/dev/null || true"
     config["head_start_ray_commands"].insert(1, _copy_token)
     config["worker_start_ray_commands"].insert(1, _copy_token)
 
@@ -517,7 +545,7 @@ def inject_brr_infra(config, staging, git_info=None, brr_meta=None):
     if git_info is not None:
         import json
         (staging / "repo_info.json").write_text(json.dumps(git_info))
-        config["head_setup_commands"].append("bash /tmp/brr/sync-repo.sh")
+        config["head_setup_commands"].append("bash /opt/brr/staging/sync-repo.sh")
 
     # Strip legacy Ray 1.x fields that trigger warnings in Ray 2.x
     config.pop("head_node", None)

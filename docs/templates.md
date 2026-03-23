@@ -51,10 +51,10 @@ Templates use `{{VAR}}` placeholders that are filled from `~/.brr/config.env` (c
 
 When you run `brr up`, the template is processed through several steps before being passed to `ray up`. The function `inject_brr_infra()` adds:
 
-- **`file_mounts`** — mounts a staging directory to `/tmp/brr/` on all nodes, containing setup scripts, config, and credentials. Any `file_mounts` you define in the template are preserved — brr merges its entry alongside yours.
-- **`initialization_commands`** — installs pip (required by Ray before setup runs)
-- **`setup_commands`** — prepends `bash /tmp/brr/setup.sh` (global setup) and `bash /tmp/brr/project-setup.sh` (project setup, if in a project). Any `setup_commands` you add to the template run after these.
-- **`head_setup_commands`** — appends `bash /tmp/brr/sync-repo.sh` to clone the project repo on first deploy (only if inside a git repo with a remote)
+- **`file_mounts`** — mounts a staging directory to `/opt/brr/staging/` on all nodes, containing setup scripts, config, and credentials. Any `file_mounts` you define in the template are preserved — brr merges its entry alongside yours.
+- **`initialization_commands`** — creates `/opt/brr/staging/` and installs pip (required by Ray before setup runs)
+- **`setup_commands`** — prepends `bash /opt/brr/staging/setup.sh` (global setup) and `bash /opt/brr/staging/project-setup.sh` (project setup, if in a project). Any `setup_commands` you add to the template run after these.
+- **`head_setup_commands`** — appends `bash /opt/brr/staging/sync-repo.sh` to clone the project repo on first deploy (only if inside a git repo with a remote)
 
 Use `brr up <template> --dry-run` to see the final YAML after all injection and rendering.
 

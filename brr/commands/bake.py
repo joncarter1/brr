@@ -58,12 +58,12 @@ def _wait_ssh(ip, key_path, timeout=180):
 
 
 def _upload_staging(ip, key_path, staging_dir):
-    """Upload staging files to /tmp/brr/ on the remote instance."""
+    """Upload staging files to /opt/brr/staging/ on the remote instance."""
     result = subprocess.run(
         [
             "scp", "-o", "StrictHostKeyChecking=accept-new",
             "-i", key_path, "-r",
-        ] + [str(f) for f in staging_dir.iterdir()] + [f"ubuntu@{ip}:/tmp/brr/"],
+        ] + [str(f) for f in staging_dir.iterdir()] + [f"ubuntu@{ip}:/opt/brr/staging/"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -199,14 +199,14 @@ def _bake_aws_image(image_type, config):
         # Prepare and upload staging
         staging = _prepare_bake_staging()
         with console.status("[bold green]Uploading setup files..."):
-            _run_remote(ip, key_path, "mkdir -p /tmp/brr")
+            _run_remote(ip, key_path, "sudo mkdir -p /opt/brr/staging && sudo chown $(id -u):$(id -g) /opt/brr/staging")
             _upload_staging(ip, key_path, staging)
 
         console.print("[green]Files uploaded[/green]")
 
         # Run setup.sh
         console.print("[bold]Running setup.sh...[/bold]")
-        rc = _run_remote(ip, key_path, "bash /tmp/brr/setup.sh")
+        rc = _run_remote(ip, key_path, "bash /opt/brr/staging/setup.sh")
         if rc != 0:
             console.print(f"[red]setup.sh failed with exit code {rc}[/red]")
             return None
@@ -214,7 +214,7 @@ def _bake_aws_image(image_type, config):
         console.print("[green]Setup complete[/green]")
 
         # Clean up staging files on remote so they don't end up in the AMI
-        _run_remote(ip, key_path, "rm -rf /tmp/brr")
+        _run_remote(ip, key_path, "rm -rf /opt/brr/staging")
 
         # Create AMI
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -459,14 +459,14 @@ async def _bake_nebius_image_async(image_type, config):
             # 5. Prepare and upload staging
             staging = _prepare_bake_staging(provider="nebius")
             with console.status("[bold green]Uploading setup files..."):
-                _run_remote(ip, ssh_key_path, "mkdir -p /tmp/brr")
+                _run_remote(ip, ssh_key_path, "sudo mkdir -p /opt/brr/staging && sudo chown $(id -u):$(id -g) /opt/brr/staging")
                 _upload_staging(ip, ssh_key_path, staging)
 
             console.print("[green]Files uploaded[/green]")
 
             # 6. Run setup.sh
             console.print("[bold]Running setup.sh...[/bold]")
-            rc = _run_remote(ip, ssh_key_path, "bash /tmp/brr/setup.sh")
+            rc = _run_remote(ip, ssh_key_path, "bash /opt/brr/staging/setup.sh")
             if rc != 0:
                 console.print(f"[red]setup.sh failed with exit code {rc}[/red]")
                 return None
@@ -474,7 +474,7 @@ async def _bake_nebius_image_async(image_type, config):
             console.print("[green]Setup complete[/green]")
 
             # 7. Clean up staging on remote
-            _run_remote(ip, ssh_key_path, "rm -rf /tmp/brr")
+            _run_remote(ip, ssh_key_path, "rm -rf /opt/brr/staging")
 
             # 8. Stop instance (image creation requires disk not attached to running instance)
             with console.status("[bold green]Stopping instance..."):

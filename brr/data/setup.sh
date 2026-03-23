@@ -19,8 +19,8 @@ fi
 echo 'Acquire::Retries "3";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
 
 # Source config if available (copied to remote via file_mounts)
-if [ -f "/tmp/brr/config.env" ]; then
-  source "/tmp/brr/config.env"
+if [ -f "/opt/brr/staging/config.env" ]; then
+  source "/opt/brr/staging/config.env"
 fi
 
 # Defaults (used if config.env not present)
@@ -209,10 +209,10 @@ if [ "${PROVIDER:-aws}" = "aws" ]; then
 fi
 
 # --- GitHub SSH access (copied via file_mounts) ---
-if [ -f "/tmp/brr/github_key" ]; then
+if [ -f "/opt/brr/staging/github_key" ]; then
   info "Configuring GitHub SSH access"
   mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
-  cp "/tmp/brr/github_key" "$HOME/.ssh/github_key"
+  cp "/opt/brr/staging/github_key" "$HOME/.ssh/github_key"
   chmod 600 "$HOME/.ssh/github_key"
 
   if ! grep -q 'Host github.com' "$HOME/.ssh/config" 2>/dev/null; then
@@ -357,9 +357,9 @@ if [ "${PROVIDER:-}" = "nebius" ]; then
   fi
 
   # Copy node provider to a persistent location (/tmp is cleared on reboot).
-  if [ -d "/tmp/brr/provider_lib" ]; then
+  if [ -d "/opt/brr/staging/provider_lib" ]; then
     sudo mkdir -p /opt/brr
-    sudo cp -r /tmp/brr/provider_lib /opt/brr/provider_lib
+    sudo cp -r /opt/brr/staging/provider_lib /opt/brr/provider_lib
     sudo chmod -R a+rX /opt/brr/provider_lib
     info "Installed node provider to /opt/brr/provider_lib"
   fi
@@ -371,9 +371,9 @@ if [ "${PROVIDER:-}" = "nebius" ]; then
   fi
 
   # Place credentials where the SDK expects them
-  if [ -f "/tmp/brr/nebius_credentials.json" ]; then
+  if [ -f "/opt/brr/staging/nebius_credentials.json" ]; then
     mkdir -p "$HOME/.nebius"
-    cp "/tmp/brr/nebius_credentials.json" "$HOME/.nebius/credentials.json"
+    cp "/opt/brr/staging/nebius_credentials.json" "$HOME/.nebius/credentials.json"
     info "Nebius credentials configured"
   fi
 
@@ -471,7 +471,7 @@ sudo systemctl restart sshd 2>/dev/null || sudo systemctl restart ssh
 if [ "${IDLE_SHUTDOWN_ENABLED}" = "true" ]; then
   info "Installing idle-shutdown daemon"
 
-  sudo cp "/tmp/brr/idle-shutdown.sh" /usr/local/bin/idle-shutdown
+  sudo cp "/opt/brr/staging/idle-shutdown.sh" /usr/local/bin/idle-shutdown
   sudo chmod 755 /usr/local/bin/idle-shutdown
 
   sudo tee /etc/systemd/system/idle-shutdown.service >/dev/null <<UNIT

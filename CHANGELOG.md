@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.13.2
+
+### Fixed
+
+- Move staging file paths from `/tmp/brr/` to `/opt/brr/staging/` in bake commands for consistency with cluster setup.
+- Fix `idle_shutdown_head=false` and `_brr.*` CLI overrides leaking into Ray YAML and causing validation errors.
+
+### Added
+
+- `head_disk_gb` CLI override to set head node disk size (e.g. `brr up cpu head_disk_gb=4096`).
+
 ## 0.13.1
 
 ### Fixed

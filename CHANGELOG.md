@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.3
+
+### Fixed
+
+- Fix `Permission denied` creating `/opt/brr/staging` during cluster setup. Ray runs an unprivileged `mkdir` before rsync, so `file_mounts` now targets `/tmp/brr/staging/` and `setup_commands` copies to `/opt/brr/staging/` with sudo.
+
 ## 0.13.2
 
 ### Fixed

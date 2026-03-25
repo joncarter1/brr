@@ -191,7 +191,7 @@ wheels = [
 
 [[package]]
 name = "brr-cli"
-version = "0.12.0"
+version = "0.13.2"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },

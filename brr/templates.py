@@ -465,26 +465,26 @@ def inject_brr_infra(config, staging, git_info=None, brr_meta=None):
     If git_info is provided, sets up git clone of the project repo on the cluster.
     If brr_meta has idle_shutdown_head=False, disables the idle-shutdown daemon on the head node.
     """
-    # initialization_commands: ensure staging dir + pip exist before Ray's internal setup
+    # initialization_commands: pip must exist before Ray's internal setup
     config.setdefault("initialization_commands", [])
     config["initialization_commands"].insert(
-        0, "sudo mkdir -p /opt/brr/staging && sudo chown $(id -u):$(id -g) /opt/brr/staging"
-    )
-    config["initialization_commands"].insert(
-        1, "export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a && sudo -E apt-get update -y && sudo -E apt-get install -y python3-pip"
+        0, "export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a && sudo -E apt-get update -y && sudo -E apt-get install -y python3-pip"
     )
 
-    # file_mounts: staging dir -> /opt/brr/staging/ on remote.
-    # /opt/brr/ survives reboots (created by initialization_commands above
-    # for fresh instances, and persists for cached node restarts).
+    # file_mounts: rsync staging to /tmp (writable without sudo). Ray runs
+    # an unprivileged `mkdir -p` before rsync, so /opt/ targets fail.
+    # setup_commands below copy from /tmp to /opt/brr/staging/ with sudo.
     config.setdefault("file_mounts", {})
-    config["file_mounts"]["/opt/brr/staging/"] = str(staging) + "/"
+    config["file_mounts"]["/tmp/brr/staging/"] = str(staging) + "/"
 
-    # setup_commands: prepend our setup scripts (global, then project)
+    # setup_commands: copy staging to persistent /opt, then run setup scripts
     config.setdefault("setup_commands", [])
-    config["setup_commands"].insert(0, "bash /opt/brr/staging/setup.sh")
+    config["setup_commands"].insert(
+        0, "sudo mkdir -p /opt/brr/staging && sudo cp -a /tmp/brr/staging/. /opt/brr/staging/ && sudo chown -R $(id -u):$(id -g) /opt/brr/staging"
+    )
+    config["setup_commands"].insert(1, "bash /opt/brr/staging/setup.sh")
     if (staging / "project-setup.sh").exists():
-        config["setup_commands"].insert(1, "bash /opt/brr/staging/project-setup.sh")
+        config["setup_commands"].insert(2, "bash /opt/brr/staging/project-setup.sh")
 
     # Ray expects these keys to exist (built-in providers fill them via
     # fillout_defaults, but external providers don't get that treatment)

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.4
+
+### Fixed
+
+- Always disable Ray config cache on `brr up` so staging files are re-synced to nodes on restart. Previously, `brr down` then `brr up` on clusters with `cache_stopped_nodes` left `/tmp/brr/staging/` empty because Ray skipped file_mounts and setup_commands.
+- Re-sync staging from `/tmp` to `/opt` in `start_ray_commands` as a fallback for cached worker node restarts where `setup_commands` are skipped.
+
 ## 0.13.3
 
 ### Fixed

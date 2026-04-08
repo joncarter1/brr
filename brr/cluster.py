@@ -296,11 +296,10 @@ def _sync_ssh_config(provider, cluster_name, display_name=None):
 @click.command()
 @click.argument("template")
 @click.argument("overrides", nargs=-1)
-@click.option("--no-config-cache", is_flag=True, help="Disable Ray config cache")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompts")
 @click.option("--dry-run", is_flag=True, help="Print rendered config without launching")
 @click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
-def up(template, overrides, no_config_cache, yes, dry_run, no_project):
+def up(template, overrides, yes, dry_run, no_project):
     """Launch or update a Ray cluster.
 
     TEMPLATE is provider:name (aws:h100, nebius:cpu) or a .yaml file path.
@@ -431,8 +430,9 @@ def up(template, overrides, no_config_cache, yes, dry_run, no_project):
     console.print(f"Wrote [green]{out}[/green]")
 
     ray_args = ["up", str(out)]
-    if no_config_cache:
-        ray_args.append("--no-config-cache")
+    # Always disable config cache — brr regenerates staging every time, and
+    # cached configs cause stale/missing /tmp/brr/staging/ on node restarts.
+    ray_args.append("--no-config-cache")
     if yes:
         ray_args.append("-y")
 

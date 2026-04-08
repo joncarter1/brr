@@ -510,10 +510,21 @@ def inject_brr_infra(config, staging, git_info=None, brr_meta=None):
     config["head_start_ray_commands"].insert(0, _ensure_mount)
     config["worker_start_ray_commands"].insert(0, _ensure_mount)
 
+    # Re-sync staging from /tmp to /opt. On cached node restarts Ray skips
+    # setup_commands but still rsyncs file_mounts, so /tmp has fresh content.
+    _sync_staging = (
+        "sudo mkdir -p /opt/brr/staging"
+        " && sudo cp -a /tmp/brr/staging/. /opt/brr/staging/"
+        " && sudo chown -R $(id -u):$(id -g) /opt/brr/staging"
+        " 2>/dev/null || true"
+    )
+    config["head_start_ray_commands"].insert(1, _sync_staging)
+    config["worker_start_ray_commands"].insert(1, _sync_staging)
+
     # Ray auth token: copy to ~/.ray/ before ray starts
     _copy_token = "mkdir -p ~/.ray && cp /opt/brr/staging/ray_auth_token ~/.ray/auth_token 2>/dev/null || true"
-    config["head_start_ray_commands"].insert(1, _copy_token)
-    config["worker_start_ray_commands"].insert(1, _copy_token)
+    config["head_start_ray_commands"].insert(2, _copy_token)
+    config["worker_start_ray_commands"].insert(2, _copy_token)
 
     # For external providers (Nebius): ensure the node provider module is
     # importable by ray start. We use `export` so the PYTHONPATH persists

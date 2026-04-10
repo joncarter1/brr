@@ -455,6 +455,12 @@ def prepare_staging(name, provider="aws", project_root=None):
     staging_token.write_text(local_token.read_text())
     staging_token.chmod(0o600)
 
+    # Force Ray to always re-sync file_mounts. Ray's updater skips rsync
+    # when file_mounts_contents_hash matches the previous deploy, which
+    # leaves /tmp/brr/staging/ missing after node restarts.
+    import time
+    (staging / ".sync_marker").write_text(str(time.time()))
+
     return staging
 
 
@@ -521,9 +527,21 @@ def inject_brr_infra(config, staging, git_info=None, brr_meta=None):
     config["head_start_ray_commands"].insert(1, _sync_staging)
     config["worker_start_ray_commands"].insert(1, _sync_staging)
 
+    # Copy ray_bootstrap_config.yaml to instance-local /tmp on the head.
+    # Ray writes this to $HOME during file_mounts, but $HOME may be a shared
+    # filesystem (EFS/virtiofs). --autoscaling-config points to /tmp.
+    # This must be in start_ray_commands (not setup_commands) because Ray
+    # skips setup_commands when the runtime_hash hasn't changed.
+    _copy_bootstrap = (
+        '[ -f "$HOME/ray_bootstrap_config.yaml" ] && '
+        'cp "$HOME/ray_bootstrap_config.yaml" /tmp/ray_bootstrap_config.yaml '
+        '2>/dev/null || true'
+    )
+    config["head_start_ray_commands"].insert(2, _copy_bootstrap)
+
     # Ray auth token: copy to ~/.ray/ before ray starts
     _copy_token = "mkdir -p ~/.ray && cp /opt/brr/staging/ray_auth_token ~/.ray/auth_token 2>/dev/null || true"
-    config["head_start_ray_commands"].insert(2, _copy_token)
+    config["head_start_ray_commands"].insert(3, _copy_token)
     config["worker_start_ray_commands"].insert(2, _copy_token)
 
     # For external providers (Nebius): ensure the node provider module is

@@ -127,6 +127,13 @@ if [ "${PROVIDER:-aws}" = "aws" ] && [ -n "${EFS_ID:-}" ]; then
     info "Home bind-mounted from $MOUNT_POINT"
   fi
 
+  # Redirect ray_bootstrap_config.yaml to instance-local /tmp so clusters
+  # sharing $HOME don't overwrite each other's autoscaling config.
+  if [ ! -L "$HOME/ray_bootstrap_config.yaml" ]; then
+    rm -f "$HOME/ray_bootstrap_config.yaml"
+    ln -s /tmp/ray_bootstrap_config.yaml "$HOME/ray_bootstrap_config.yaml"
+  fi
+
   # Persistent code directory
   mkdir -p "$HOME/code"
 fi
@@ -166,6 +173,13 @@ if [ "${PROVIDER:-}" = "nebius" ] && [ -n "${NEBIUS_FILESYSTEM_ID:-}" ]; then
     info "Home bind-mounted from $MOUNT_POINT"
   fi
 
+  # Redirect ray_bootstrap_config.yaml to instance-local /tmp so clusters
+  # sharing $HOME don't overwrite each other's autoscaling config.
+  if [ ! -L "$HOME/ray_bootstrap_config.yaml" ]; then
+    rm -f "$HOME/ray_bootstrap_config.yaml"
+    ln -s /tmp/ray_bootstrap_config.yaml "$HOME/ray_bootstrap_config.yaml"
+  fi
+
   # Persistent code directory
   mkdir -p "$HOME/code"
 fi
@@ -199,6 +213,12 @@ fi
 if [ -d "$MOUNT_POINT/home/ubuntu" ] && ! mountpoint -q "$HOME" 2>/dev/null; then
   sudo mount --bind "$MOUNT_POINT/home/ubuntu" "$HOME"
   echo "[brr-ensure-mount] Home bind-mounted from $MOUNT_POINT"
+fi
+
+# Redirect ray_bootstrap_config.yaml to instance-local /tmp
+if [ ! -L "$HOME/ray_bootstrap_config.yaml" ]; then
+  rm -f "$HOME/ray_bootstrap_config.yaml"
+  ln -s /tmp/ray_bootstrap_config.yaml "$HOME/ray_bootstrap_config.yaml"
 fi
 ENSURE_MOUNT
 sudo chmod +x /usr/local/bin/brr-ensure-mount

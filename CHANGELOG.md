@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.5
+
+### Fixed
+
+- Ray skips `file_mounts` rsync and `setup_commands` when its content hashes match, leaving `/tmp/brr/staging/` and `/tmp/ray_bootstrap_config.yaml` missing on re-deploy. A timestamp `.sync_marker` is now written into staging to force Ray to re-sync, and `ray_bootstrap_config.yaml` is copied to `/tmp` in `head_start_ray_commands` (which always runs) instead of only in `setup.sh`.
+- Multi-cluster setups sharing an EFS/virtiofs filesystem could clobber each other's `ray_bootstrap_config.yaml` in `$HOME`. `setup.sh` now symlinks `~/ray_bootstrap_config.yaml` to instance-local `/tmp/ray_bootstrap_config.yaml`.
+
 ## 0.13.4
 
 ### Fixed

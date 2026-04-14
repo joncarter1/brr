@@ -593,52 +593,6 @@ def write_yaml(config, output_path):
     return output_path
 
 
-_NEBIUS_BAKE_FAMILIES = {
-    "ubuntu22.04-driverless": "NEBIUS_IMAGE_CPU_BAKED",
-    "ubuntu22.04-cuda12": "NEBIUS_IMAGE_GPU_BAKED",
-}
-
-
-def apply_baked_images(rendered, config):
-    """Swap base images with baked images in rendered Ray YAML.
-
-    AWS: replaces ImageId values with baked AMI IDs.
-    Nebius: injects baked_image_id into node_config (node_provider uses it over image_family).
-    """
-    # AWS
-    ami_map = {}
-    for base, baked in [("AMI_UBUNTU", "AMI_UBUNTU_BAKED"), ("AMI_DL", "AMI_DL_BAKED")]:
-        if config.get(baked):
-            base_val = config.get(base, "")
-            if base_val:
-                ami_map[base_val] = config[baked]
-    if ami_map:
-        for node_type in rendered.get("available_node_types", {}).values():
-            nc = node_type.get("node_config", {})
-            if nc.get("ImageId") in ami_map:
-                nc["ImageId"] = ami_map[nc["ImageId"]]
-
-    # Nebius
-    nebius_map = {}
-    for family, config_key in _NEBIUS_BAKE_FAMILIES.items():
-        baked_id = config.get(config_key, "")
-        if baked_id:
-            nebius_map[family] = baked_id
-    if nebius_map:
-        for node_type in rendered.get("available_node_types", {}).values():
-            nc = node_type.get("node_config", {})
-            family = nc.get("image_family", "")
-            if family in nebius_map:
-                nc["baked_image_id"] = nebius_map[family]
-
-
-def global_setup_hash():
-    """Return MD5 hex digest of the current global setup.sh content."""
-    import hashlib
-    content = _read_global_setup()
-    return hashlib.md5(content.encode()).hexdigest()
-
-
 def output_path_for(name, provider="aws"):
     """Return the rendered YAML output path for a cluster name."""
     return rendered_yaml_for(name, provider)

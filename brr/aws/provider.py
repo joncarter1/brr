@@ -62,16 +62,3 @@ class AWSProvider(Provider):
         ec2 = boto3.client("ec2", region_name=region)
         ec2.terminate_instances(InstanceIds=ids)
         return len(ids)
-
-    def bake_hint(self, config):
-        from brr.templates import global_setup_hash
-        bake_hash = config.get("BAKE_SETUP_HASH", "")
-        has_baked = config.get("AMI_UBUNTU_BAKED") or config.get("AMI_DL_BAKED")
-        if has_baked and bake_hash and bake_hash != global_setup_hash():
-            return (
-                "Warning: setup.sh has changed since last bake. "
-                "Run `brr bake aws` to rebuild."
-            )
-        elif not has_baked:
-            return "Tip: Run `brr bake aws` to pre-bake setup into AMIs for faster boot."
-        return None

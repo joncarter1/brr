@@ -56,10 +56,9 @@ Key behaviors:
 - **`brr/cli.py`** — Click command group, version from `importlib.metadata`.
 - **`brr/cluster.py`** — Cluster lifecycle. Uses `_find_ray()` to locate the Ray binary and `_run_ray()` to exec it.
 - **`brr/state.py`** — Config parsing (`read_config`/`write_config`), state dirs, project discovery, provider checks.
-- **`brr/templates.py`** — Template resolution, rendering, override system, staging, baked image substitution.
+- **`brr/templates.py`** — Template resolution, rendering, override system, staging.
 - **`brr/commands/init.py`** — `brr init` scaffolds `.brr/{provider}/` with templates + `.brr/setup.sh`. Maps project template names to built-in ones (`_TEMPLATE_MAP`).
 - **`brr/commands/configure.py`** — Interactive wizard: cloud provider, AI tools, general settings. Uses InquirerPy for menus.
-- **`brr/commands/bake.py`** — Pre-bakes global setup into AMIs/images. Strips secrets (`_BAKE_STRIP_KEYS`) before baking. Tracks staleness via setup.sh hash.
 - **`brr/commands/nuke.py`** — Destructive teardown. Multi-region parallel cleanup with ThreadPoolExecutor (AWS) or async SDK (Nebius).
 - **`brr/data/setup.sh`** — Node bootstrap: mounts, AWS CLI, GitHub SSH keys, AI tools, Python venv, Ray, idle shutdown daemon.
 - **`brr/data/idle-shutdown.sh`** — Systemd daemon monitoring CPU/GPU/SSH activity.
@@ -88,7 +87,7 @@ brr is maturing and has users with existing project templates (`.brr/{provider}/
 ### Known Pitfalls
 
 - `textwrap.dedent` with f-strings breaks when interpolated values have different indentation. Build shell scripts as concatenated string parts instead.
-- `config.env` keys can contain digits (e.g. `NEBIUS_IMAGE_GPU_BAKED`), so the parsing regex must be `[A-Z0-9_]+`.
+- `config.env` keys may contain digits, so the parsing regex must be `[A-Z0-9_]+`.
 - Nebius `recovery_policy` is immutable after instance creation — must use `InstanceRecoveryPolicy.FAIL` to prevent auto-restart after idle shutdown.
 - Nebius instance state 8 is ERROR (not DELETED) — `_TERMINAL_STATES` must include it.
 - External providers (Nebius) need explicit `resources: {CPU: N}` in Ray YAML templates — Ray can't auto-detect.

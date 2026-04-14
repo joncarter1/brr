@@ -29,16 +29,3 @@ class NebiusProvider(Provider):
     def terminate_by_ids(self, config, ids):
         from brr.nebius.nodes import terminate_instances
         return terminate_instances(config.get("NEBIUS_PROJECT_ID", ""), ids)
-
-    def bake_hint(self, config):
-        from brr.templates import global_setup_hash
-        bake_hash = config.get("NEBIUS_BAKE_SETUP_HASH", "")
-        has_baked = config.get("NEBIUS_IMAGE_CPU_BAKED") or config.get("NEBIUS_IMAGE_GPU_BAKED")
-        if has_baked and bake_hash and bake_hash != global_setup_hash():
-            return (
-                "Warning: setup.sh has changed since last bake. "
-                "Run `brr bake nebius` to rebuild."
-            )
-        elif not has_baked:
-            return "Tip: Run `brr bake nebius` to pre-bake setup into images for faster boot."
-        return None

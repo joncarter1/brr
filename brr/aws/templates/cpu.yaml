@@ -29,7 +29,7 @@ available_node_types:
       CPU: 8
     node_config:
       InstanceType: t3.2xlarge
-      ImageId: {{AMI_UBUNTU}}
+      ImageId: ami-05e86b3611c60b0b4  # us-east-1 Ubuntu 22.04 LTS
       KeyName: {{AWS_KEY_NAME}}
       SecurityGroupIds: ["{{AWS_SECURITY_GROUP}}"]
       IamInstanceProfile:
@@ -46,7 +46,7 @@ available_node_types:
       CPU: 2
     node_config:
       InstanceType: t3.large
-      ImageId: {{AMI_UBUNTU}}
+      ImageId: ami-05e86b3611c60b0b4  # us-east-1 Ubuntu 22.04 LTS
       KeyName: {{AWS_KEY_NAME}}
       SecurityGroupIds: ["{{AWS_SECURITY_GROUP}}"]
       IamInstanceProfile:

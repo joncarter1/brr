@@ -19,7 +19,6 @@ from brr.templates import (
     resolve_template,
     render,
     apply_overrides,
-    apply_baked_images,
     prepare_staging,
     inject_brr_infra,
     write_yaml,
@@ -402,21 +401,10 @@ def up(template, overrides, yes, dry_run, no_project):
     staging = prepare_staging(cluster_name, provider, project_root=project_root)
     inject_brr_infra(rendered, staging, git_info=git_info, brr_meta=template_aliases)
 
-    # Apply baked images if available (works for both AWS and Nebius)
-    apply_baked_images(rendered, config)
-
     if dry_run:
         console.print()
         console.print(yaml.dump(rendered, default_flow_style=False, sort_keys=False), end="", highlight=False)
         return
-
-    from brr.providers import get_provider
-    prov = get_provider(provider)
-    bake_hint = prov.bake_hint(config)
-    if bake_hint:
-        style = "[yellow]" if bake_hint.startswith("Warning") else "[dim]"
-        end_style = "[/yellow]" if bake_hint.startswith("Warning") else "[/dim]"
-        console.print(f"{style}{bake_hint}{end_style}")
 
     if project_root and git_info:
         console.print(f"Repo sync: [green]git clone {git_info['repo_name']}[/green] → ~/code/{git_info['repo_name']}/")
@@ -570,8 +558,7 @@ def clean(template, yes, no_project):
     """Terminate stopped (cached) instances.
 
     Stopped instances are left behind by `brr down` (which stops rather than
-    terminates). Use this to free them — e.g. after `brr bake` when cached
-    instances have stale AMIs.
+    terminates). Use this to free them when cached instances have stale AMIs.
 
     If TEMPLATE is given, clean only that cluster. Otherwise clean all stopped
     Ray instances.

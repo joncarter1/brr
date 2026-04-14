@@ -30,7 +30,7 @@ available_node_types:
       GPU: 1
     node_config:
       InstanceType: gr6.4xlarge # L4 GPU https://aws.amazon.com/ec2/instance-types/g6/
-      ImageId: {{AMI_DL}}
+      ImageId: ami-011f3ba065b22345e  # us-east-1 Deep Learning Base OSS Nvidia Driver (CUDA 13)
       KeyName: {{AWS_KEY_NAME}}
       SecurityGroupIds: ["{{AWS_SECURITY_GROUP}}"]
       IamInstanceProfile:

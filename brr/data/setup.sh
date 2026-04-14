@@ -1,7 +1,6 @@
 #!/bin/bash
 # ============================================================
 # brr global setup — built-in, updates automatically with brr upgrades
-# Bake into AMI: brr bake aws
 # ============================================================
 
 set -Eeuo pipefail

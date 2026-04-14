@@ -156,7 +156,7 @@ class NebiusNodeProvider(NodeProvider):
         logger.info(f"Restarted stopped Nebius instance {node_id}")
 
     _KNOWN_NODE_CONFIG_KEYS = {
-        "platform_id", "preset_id", "image_family", "baked_image_id",
+        "platform_id", "preset_id", "image_family",
         "subnet_id", "disk_size_gb", "disk_type",
         "preemptible", "ssh_public_key",
     }
@@ -250,7 +250,6 @@ class NebiusNodeProvider(NodeProvider):
             # 1. Create or reuse boot disk
             disk_size_gb = node_config.get("disk_size_gb", 100)
             image_family = node_config.get("image_family", "ubuntu22.04-driverless")
-            baked_image_id = node_config.get("baked_image_id")
             disk_name = f"{name}-boot"
 
             # Map disk_type string to DiskSpec enum
@@ -264,20 +263,13 @@ class NebiusNodeProvider(NodeProvider):
                 DiskSpec.DiskType.NETWORK_SSD,
             )
 
-            if baked_image_id:
-                disk_spec = DiskSpec(
-                    type=disk_type,
-                    source_image_id=baked_image_id,
-                    size_gibibytes=disk_size_gb,
-                )
-            else:
-                disk_spec = DiskSpec(
-                    type=disk_type,
-                    source_image_family=SourceImageFamily(
-                        image_family=image_family,
-                    ),
-                    size_gibibytes=disk_size_gb,
-                )
+            disk_spec = DiskSpec(
+                type=disk_type,
+                source_image_family=SourceImageFamily(
+                    image_family=image_family,
+                ),
+                size_gibibytes=disk_size_gb,
+            )
 
             try:
                 disk_op = await disk_client.create(CreateDiskRequest(

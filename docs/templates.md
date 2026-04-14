@@ -36,8 +36,8 @@ Templates use `{{VAR}}` placeholders that are filled from `~/.brr/config.env` (c
 | `{{AWS_SSH_KEY}}` | Path to SSH private key |
 | `{{AWS_KEY_NAME}}` | EC2 key pair name |
 | `{{AWS_SECURITY_GROUP}}` | Security group ID |
-| `{{AMI_UBUNTU}}` | Ubuntu AMI (CPU nodes) |
-| `{{AMI_DL}}` | Deep Learning AMI (GPU nodes) |
+
+AMI IDs are hardcoded directly in the built-in AWS templates (`us-east-1`). Edit the template's `ImageId:` line to use a different AMI or region.
 
 ### Nebius
 | Placeholder | Description |

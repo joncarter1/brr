@@ -37,10 +37,6 @@ class Provider:
         """Terminate instances by ID list. Return count terminated."""
         raise NotImplementedError
 
-    def bake_hint(self, config):
-        """Return a bake status hint message, or None if nothing to say."""
-        raise NotImplementedError
-
 
 _PROVIDERS = {}
 

@@ -168,17 +168,6 @@ brr config set DOTFILES_REPO "https://github.com/user/dotfiles"
 
 The repo is cloned to `~/dotfiles` and installed via `install.sh` (if present) or GNU Stow.
 
-### Image baking
-
-Bake the global setup into AMIs/images for fast boot:
-
-```sh
-brr bake aws          # bake both CPU + GPU AMIs
-brr bake status       # check if baked images are up to date
-```
-
-After baking, clusters boot from the pre-built image. Only project-specific deps need to install. `brr up` warns when setup.sh has changed since the last bake.
-
 ### Idle shutdown
 
 A systemd daemon monitors CPU, GPU, and SSH activity. When all signals are idle for the configured timeout, the instance shuts down.
@@ -224,8 +213,6 @@ AWS nodes are cached (stopped) by default.
 | `brr init` | Initialize a project (interactive provider selection) |
 | `brr configure [cloud\|tools\|general]` | Interactive setup (cloud provider, AI tools, settings) |
 | `brr config [list\|get\|set\|path]` | View and manage configuration |
-| `brr bake [aws\|nebius]` | Bake setup into cloud images |
-| `brr bake status` | Check if baked images are up to date |
 | `brr completion [bash\|zsh\|fish]` | Shell completion (`--install` to add to shell rc) |
 | `brr nuke [aws\|nebius]` | Tear down all cloud resources |
 

@@ -6,7 +6,6 @@ os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
 import click
 from importlib.metadata import version as _pkg_version
 
-from brr.commands.bake import bake
 from brr.commands.config import config
 from brr.commands.init import init_cmd
 from brr.commands.nuke import nuke
@@ -93,9 +92,6 @@ cli.add_command(list_cmd, "list")
 
 # Template inspection
 cli.add_command(templates)
-
-# Image baking
-cli.add_command(bake)
 
 # Project setup
 cli.add_command(init_cmd, "init")

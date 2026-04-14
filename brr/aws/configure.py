@@ -17,8 +17,6 @@ console = Console()
 
 DEFAULTS = {
     "AWS_REGION": "us-east-1",
-    "AMI_UBUNTU": "ami-0360c520857e3138f",
-    "AMI_DL": "ami-0b594b8835777de74",
 }
 
 
@@ -299,14 +297,6 @@ def configure_aws():
         "AWS region",
         default=existing.get("AWS_REGION", DEFAULTS["AWS_REGION"]),
     )
-    ami_ubuntu = click.prompt(
-        "Ubuntu AMI",
-        default=existing.get("AMI_UBUNTU", DEFAULTS["AMI_UBUNTU"]),
-    )
-    ami_dl = click.prompt(
-        "Deep Learning AMI",
-        default=existing.get("AMI_DL", DEFAULTS["AMI_DL"]),
-    )
 
     efs_enabled = click.confirm(
         "Enable shared EFS filesystem?",
@@ -359,8 +349,6 @@ def configure_aws():
         "AWS_KEY_NAME": key_name,
         "AWS_SSH_KEY": key_path,
         "EFS_ID": efs_id,
-        "AMI_UBUNTU": ami_ubuntu,
-        "AMI_DL": ami_dl,
         "GITHUB_SSH_KEY": github_ssh_key,
     }
 

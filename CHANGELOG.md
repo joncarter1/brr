@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.0
+
+### Changed
+
+- AWS templates now hardcode AMI IDs directly in the built-in YAMLs (`ami-05e86b3611c60b0b4` for Ubuntu 22.04, `ami-011f3ba065b22345e` for CUDA 13 DLAMI, both `us-east-1`). Override by editing the template's `ImageId:` line. `AMI_UBUNTU` / `AMI_DL` removed from `brr configure aws` and `DEFAULTS`.
+- Bake subsystem removed: `brr bake aws` / `brr bake nebius` commands, `apply_baked_images`, provider `bake_hint` methods, Nebius `baked_image_id` node_config key, and `BAKE_SETUP_HASH` tracking. To be revisited later.
+
 ## 0.13.5
 
 ### Fixed

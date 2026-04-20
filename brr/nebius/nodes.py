@@ -6,12 +6,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+NEBIUS_QUERY_TIMEOUT = 30
+
 # Nebius Instance state enum (protobuf integers):
 #   UNSPECIFIED=0, CREATING=1, UPDATING=2, STARTING=3,
 #   RUNNING=4, STOPPING=5, STOPPED=6, DELETING=7, ERROR=8
 _RUNNING_STATES = {4, "4", "RUNNING"}
 _STOPPED_STATES = {5, "5", 6, "6", "STOPPED", "STOPPING"}
 _TERMINAL_STATES = {7, "7", 8, "8", "ERROR", "DELETING"}
+
+
+def _run_with_timeout(coro):
+    try:
+        return asyncio.run(asyncio.wait_for(coro, timeout=NEBIUS_QUERY_TIMEOUT))
+    except asyncio.TimeoutError:
+        raise TimeoutError(
+            f"Nebius query timed out after {NEBIUS_QUERY_TIMEOUT}s — check network connection"
+        ) from None
 
 
 def _is_running(state):
@@ -84,7 +95,7 @@ def query_head_ip(project_id, cluster_name):
     Queries instances by ray-cluster-name label and returns the head node's
     public IP, or None if not found.
     """
-    return asyncio.run(_query_head_ip(project_id, cluster_name))
+    return _run_with_timeout(_query_head_ip(project_id, cluster_name))
 
 
 async def _query_head_ip(project_id, cluster_name):
@@ -120,7 +131,7 @@ def query_clusters(project_id):
     Returns list of dicts with cluster_name, state, head_ip, preset,
     node_count, uptime — matching the format of aws/nodes.py:query_ray_clusters().
     """
-    return asyncio.run(_query_clusters(project_id))
+    return _run_with_timeout(_query_clusters(project_id))
 
 
 async def _query_clusters(project_id):
@@ -183,7 +194,7 @@ def query_stopped_instances(project_id, cluster_name=None):
 
     Returns list of dicts with instance_id, name, cluster_name.
     """
-    return asyncio.run(_query_stopped_instances(project_id, cluster_name))
+    return _run_with_timeout(_query_stopped_instances(project_id, cluster_name))
 
 
 async def _query_stopped_instances(project_id, cluster_name=None):
@@ -221,12 +232,12 @@ async def _query_stopped_instances(project_id, cluster_name=None):
 
 def terminate_instances(project_id, instance_ids):
     """Terminate Nebius instances by ID. Returns count terminated."""
-    return asyncio.run(_terminate_instances(instance_ids))
+    return _run_with_timeout(_terminate_instances(instance_ids))
 
 
 def terminate_cluster_instances(project_id, cluster_name):
     """Terminate all instances for a Nebius Ray cluster. Returns count terminated."""
-    return asyncio.run(_terminate_cluster_instances(project_id, cluster_name))
+    return _run_with_timeout(_terminate_cluster_instances(project_id, cluster_name))
 
 
 async def _terminate_instances(instance_ids):

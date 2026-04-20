@@ -706,6 +706,10 @@ def list_cmd(show_all):
                         ray_statuses[(provider_name, c["cluster_name"])] = get_ray_status(c["head_ip"], key)
         except (ImportError, ModuleNotFoundError):
             console.print(f"[dim]{provider_name} configured but SDK not installed[/dim]")
+        except TimeoutError as e:
+            console.print(f"[yellow]{provider_name}: {e}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]{provider_name}: query failed: {type(e).__name__}: {e}[/yellow]")
 
     # Build project cluster map (always, for display purposes)
     cluster_map = {}  # cluster_name → template_stem

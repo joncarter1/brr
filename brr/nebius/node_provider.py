@@ -6,10 +6,11 @@ Ray's autoscaler calls these methods to create/terminate/query nodes.
 
 import asyncio
 import logging
+import threading
 import uuid
-from threading import RLock
 
 from ray.autoscaler.node_provider import NodeProvider
+from ray.autoscaler.tags import TAG_RAY_CLUSTER_NAME, TAG_RAY_USER_NODE_TYPE
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ class NebiusNodeProvider(NodeProvider):
 
     def __init__(self, provider_config, cluster_name):
         super().__init__(provider_config, cluster_name)
-        self.lock = RLock()
+        self.lock = threading.RLock()  # guards self._cache only
         self.project_id = provider_config["project_id"]
         fs_id = provider_config.get("filesystem_id", "")
         self.filesystem_id = "" if not fs_id or "{{" in fs_id else fs_id
@@ -46,21 +47,54 @@ class NebiusNodeProvider(NodeProvider):
         else:
             self._sdk = SDK()
 
-        # Persistent event loop — the SDK's internal asyncio primitives
-        # (locks, events) bind to the first loop they run on. Using a single
-        # loop avoids "bound to a different event loop" errors.
+        # Persistent event loop on a dedicated thread. The SDK's asyncio
+        # primitives bind to the first loop they see, so we keep exactly one
+        # loop — but we run it continuously in the background so coroutines
+        # submitted from different threads interleave at await points rather
+        # than serializing end-to-end behind run_until_complete + a lock.
         self._loop = asyncio.new_event_loop()
-        self._loop.run_until_complete(self._sdk.__aenter__())
+        self._loop_thread = threading.Thread(
+            target=self._loop.run_forever,
+            name="nebius-provider-loop",
+            daemon=True,
+        )
+        self._loop_thread.start()
+        # Bring the SDK up on the loop before accepting work.
+        asyncio.run_coroutine_threadsafe(self._sdk.__aenter__(), self._loop).result()
 
         self._cache = {}  # node_id -> {tags, instance}
+        # Instances currently being created (by name) or set up post-restart
+        # (by id). Hidden from non_terminated_nodes so Ray's updater doesn't
+        # race our in-flight Nebius operation — any UpdateInstance while a
+        # create/start op is active returns FAILED_PRECONDITION, which Ray
+        # surfaces as "launch failed" and terminates the node.
+        self._hidden_names = set()
+        self._hidden_ids = set()
 
     def _run(self, coro):
-        """Run an async coroutine on the provider's dedicated event loop.
+        """Submit a coroutine to the provider's background event loop.
 
-        Thread-safe: Ray's updater may call from a different thread.
+        Thread-safe: any thread may call this; coroutines interleave on the
+        loop at await points instead of blocking every other provider call.
         """
-        with self.lock:
-            return self._loop.run_until_complete(coro)
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+
+    def __del__(self):
+        loop = getattr(self, "_loop", None)
+        if loop is None:
+            return
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self._sdk.__aexit__(None, None, None), loop
+            )
+            fut.result(timeout=10)
+        except Exception:
+            pass
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+            self._loop_thread.join(timeout=5)
+        except Exception:
+            pass
 
     def _instance_client(self):
         from nebius.api.nebius.compute.v1 import InstanceServiceClient
@@ -104,9 +138,9 @@ class NebiusNodeProvider(NodeProvider):
             response = await client.list(req)
             for inst in response.items:
                 labels = dict(inst.metadata.labels) if inst.metadata.labels else {}
-                if labels.get("ray-cluster-name") != self.cluster_name:
+                if labels.get(TAG_RAY_CLUSTER_NAME) != self.cluster_name:
                     continue
-                if labels.get("ray-node-type") != node_type:
+                if labels.get(TAG_RAY_USER_NODE_TYPE) != node_type:
                     continue
                 state = inst.status.state if inst.status else None
                 if self._is_stopped(state):
@@ -159,6 +193,7 @@ class NebiusNodeProvider(NodeProvider):
         "platform_id", "preset_id", "image_family",
         "subnet_id", "disk_size_gb", "disk_type",
         "preemptible", "ssh_public_key",
+        "gpu_cluster_id",
     }
 
     def create_node(self, node_config, tags, count):
@@ -177,6 +212,7 @@ class NebiusNodeProvider(NodeProvider):
             DiskSpec,
             SourceImageFamily,
             InstanceSpec,
+            InstanceGpuClusterSpec,
             InstanceRecoveryPolicy,
             PreemptibleSpec,
             ResourcesSpec,
@@ -192,12 +228,15 @@ class NebiusNodeProvider(NodeProvider):
 
         # Reuse stopped nodes — but not preemptible ones, which may have been
         # preempted due to capacity and are unlikely to restart successfully.
-        node_type = tags.get("ray-node-type", "worker")
+        # Match on the user node type (e.g. "ray.worker.h200d"), NOT the kind
+        # ("head"/"worker") — otherwise every worker type collapses together
+        # and we risk restarting an h200x8s as an h200d.
+        node_type = tags.get(TAG_RAY_USER_NODE_TYPE)
         remaining = count
         excess_stopped = []
         is_preemptible = bool(node_config.get("preemptible"))
         try:
-            stopped = await self._find_stopped_nodes(node_type)
+            stopped = await self._find_stopped_nodes(node_type) if node_type else []
             if is_preemptible:
                 # Don't attempt restart — preempted instances likely lack capacity,
                 # and operation.wait() could block for a long time.
@@ -211,16 +250,22 @@ class NebiusNodeProvider(NodeProvider):
                 for inst_id in stopped:
                     if remaining <= 0:
                         break
-                    # Ensure security group is attached before starting
-                    # (may be missing on nodes created before SG feature)
-                    if self.security_group_id:
-                        await self._ensure_security_group(inst_id)
-                    await self._start_instance(inst_id)
-                    await self._set_node_tags(inst_id, tags)
-                    inst = await self._fetch_instance(inst_id)
-                    if inst:
+                    with self.lock:
+                        self._hidden_ids.add(inst_id)
+                    try:
+                        # Ensure security group is attached before starting
+                        # (may be missing on nodes created before SG feature)
+                        if self.security_group_id:
+                            await self._ensure_security_group(inst_id)
+                        await self._start_instance(inst_id)
+                        await self._set_node_tags(inst_id, tags)
+                        inst = await self._fetch_instance(inst_id)
+                        if inst:
+                            with self.lock:
+                                self._cache[inst_id] = {"tags": dict(tags), "instance": inst}
+                    finally:
                         with self.lock:
-                            self._cache[inst_id] = {"tags": dict(tags), "instance": inst}
+                            self._hidden_ids.discard(inst_id)
                     remaining -= 1
                     restarted += 1
                 excess_stopped = stopped[restarted:]
@@ -241,11 +286,14 @@ class NebiusNodeProvider(NodeProvider):
         disk_client = self._disk_client()
 
         for _ in range(remaining):
-            node_type = tags.get("ray-node-type", "worker")
-            name = f"{self.cluster_name}-{node_type}-{uuid.uuid4().hex[:8]}"
+            # Nebius resource names can't contain dots, so sanitize
+            # "ray.worker.h200d" -> "ray-worker-h200d".
+            raw_type = tags.get(TAG_RAY_USER_NODE_TYPE) or tags.get("ray-node-type", "worker")
+            sanitized = raw_type.replace(".", "-")
+            name = f"{self.cluster_name}-{sanitized}-{uuid.uuid4().hex[:8]}"
 
             labels = dict(tags)
-            labels["ray-cluster-name"] = self.cluster_name
+            labels[TAG_RAY_CLUSTER_NAME] = self.cluster_name
 
             # 1. Create or reuse boot disk
             disk_size_gb = node_config.get("disk_size_gb", 100)
@@ -350,19 +398,28 @@ class NebiusNodeProvider(NodeProvider):
                     on_preemption=PreemptibleSpec.PreemptionPolicy.STOP,
                     priority=priority,
                 )
+            gpu_cluster_id = node_config.get("gpu_cluster_id")
+            if gpu_cluster_id and "{{" not in str(gpu_cluster_id):
+                spec_kwargs["gpu_cluster"] = InstanceGpuClusterSpec(id=gpu_cluster_id)
             spec = InstanceSpec(**spec_kwargs)
 
-            op = await instance_client.create(CreateInstanceRequest(
-                metadata=ResourceMetadata(
-                    parent_id=self.project_id,
-                    name=name,
-                    labels=labels,
-                ),
-                spec=spec,
-            ))
-            await op.wait()
-            node_id = op.resource_id
-            logger.info(f"Created Nebius instance {node_id} ({name})")
+            with self.lock:
+                self._hidden_names.add(name)
+            try:
+                op = await instance_client.create(CreateInstanceRequest(
+                    metadata=ResourceMetadata(
+                        parent_id=self.project_id,
+                        name=name,
+                        labels=labels,
+                    ),
+                    spec=spec,
+                ))
+                await op.wait()
+                node_id = op.resource_id
+                logger.info(f"Created Nebius instance {node_id} ({name})")
+            finally:
+                with self.lock:
+                    self._hidden_names.discard(name)
 
             with self.lock:
                 self._cache[node_id] = {"tags": dict(tags), "instance": None}
@@ -431,6 +488,9 @@ class NebiusNodeProvider(NodeProvider):
         client = self._instance_client()
         nodes = []
         page_token = None
+        with self.lock:
+            hidden_names = set(self._hidden_names)
+            hidden_ids = set(self._hidden_ids)
         while True:
             req = ListInstancesRequest(parent_id=self.project_id)
             if page_token:
@@ -438,9 +498,13 @@ class NebiusNodeProvider(NodeProvider):
             response = await client.list(req)
 
             for inst in response.items:
+                if inst.metadata.id in hidden_ids:
+                    continue
+                if inst.metadata.name in hidden_names:
+                    continue
                 labels = dict(inst.metadata.labels) if inst.metadata.labels else {}
 
-                if labels.get("ray-cluster-name") != self.cluster_name:
+                if labels.get(TAG_RAY_CLUSTER_NAME) != self.cluster_name:
                     continue
                 if not all(labels.get(k) == v for k, v in tag_filters.items()):
                     continue
@@ -522,21 +586,37 @@ class NebiusNodeProvider(NodeProvider):
         )
 
         client = self._instance_client()
-        instance = await client.get(GetInstanceRequest(id=node_id))
-
-        labels = dict(instance.metadata.labels) if instance.metadata.labels else {}
-        labels.update(tags)
-
-        operation = await client.update(UpdateInstanceRequest(
-            metadata=ResourceMetadata(
-                id=node_id,
-                parent_id=instance.metadata.parent_id,
-                name=instance.metadata.name,
-                labels=labels,
-            ),
-            spec=instance.spec,
-        ))
-        await operation.wait()
+        # Defense in depth: retry on FAILED_PRECONDITION ("cannot update
+        # instance with active operation"). Ray's updater may race a
+        # create/start operation that's still settling; without this the
+        # exception propagates up and Ray terminates the node.
+        total_slept = 0.0
+        while True:
+            try:
+                instance = await client.get(GetInstanceRequest(id=node_id))
+                labels = dict(instance.metadata.labels) if instance.metadata.labels else {}
+                labels.update(tags)
+                operation = await client.update(UpdateInstanceRequest(
+                    metadata=ResourceMetadata(
+                        id=node_id,
+                        parent_id=instance.metadata.parent_id,
+                        name=instance.metadata.name,
+                        labels=labels,
+                    ),
+                    spec=instance.spec,
+                ))
+                await operation.wait()
+                return
+            except Exception as e:
+                msg = str(e)
+                if ("FAILED_PRECONDITION" in msg
+                        and "active operation" in msg
+                        and total_slept < 600):
+                    delay = min(5.0, 1.0 + total_slept / 30)
+                    await asyncio.sleep(delay)
+                    total_slept += delay
+                    continue
+                raise
 
     def external_ip(self, node_id):
         inst = self._get_cached_or_fetch(node_id)

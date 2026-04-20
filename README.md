@@ -170,7 +170,7 @@ The repo is cloned to `~/dotfiles` and installed via `install.sh` (if present) o
 
 ### Idle shutdown
 
-A systemd daemon monitors CPU, GPU, and SSH activity. When all signals are idle for the configured timeout, the instance shuts down.
+A systemd daemon monitors CPU, GPU, SSH activity, and network throughput. When all signals are idle for the configured timeout, the instance shuts down.
 
 Configure in `~/.brr/config.env`:
 
@@ -178,6 +178,7 @@ Configure in `~/.brr/config.env`:
 IDLE_SHUTDOWN_ENABLED="true"
 IDLE_SHUTDOWN_TIMEOUT_MIN="30"
 IDLE_SHUTDOWN_CPU_THRESHOLD="10"
+IDLE_SHUTDOWN_NET_THRESHOLD_KBPS="100"
 IDLE_SHUTDOWN_GRACE_MIN="15"
 ```
 

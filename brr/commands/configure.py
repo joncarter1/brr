@@ -198,7 +198,7 @@ def general_cmd():
         "Enable idle shutdown?",
         default=idle_default.lower() in ("true", "yes", "1"),
     )
-    idle_timeout = idle_threshold = idle_grace = None
+    idle_timeout = idle_threshold = idle_net_threshold = idle_grace = None
     if idle_enabled:
         idle_timeout = click.prompt(
             "  Idle timeout (minutes)",
@@ -216,6 +216,16 @@ def general_cmd():
                 existing.get(
                     "IDLE_SHUTDOWN_CPU_THRESHOLD",
                     GENERAL_DEFAULTS["IDLE_SHUTDOWN_CPU_THRESHOLD"],
+                )
+            ),
+            type=int,
+        )
+        idle_net_threshold = click.prompt(
+            "  Network threshold (KB/s, rx+tx)",
+            default=int(
+                existing.get(
+                    "IDLE_SHUTDOWN_NET_THRESHOLD_KBPS",
+                    GENERAL_DEFAULTS["IDLE_SHUTDOWN_NET_THRESHOLD_KBPS"],
                 )
             ),
             type=int,
@@ -242,6 +252,10 @@ def general_cmd():
             ),
             "IDLE_SHUTDOWN_CPU_THRESHOLD": str(
                 idle_threshold or GENERAL_DEFAULTS["IDLE_SHUTDOWN_CPU_THRESHOLD"]
+            ),
+            "IDLE_SHUTDOWN_NET_THRESHOLD_KBPS": str(
+                idle_net_threshold
+                or GENERAL_DEFAULTS["IDLE_SHUTDOWN_NET_THRESHOLD_KBPS"]
             ),
             "IDLE_SHUTDOWN_GRACE_MIN": str(
                 idle_grace or GENERAL_DEFAULTS["IDLE_SHUTDOWN_GRACE_MIN"]

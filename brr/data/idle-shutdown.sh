@@ -2,7 +2,7 @@
 # idle-shutdown -- Shuts down instance after sustained idle period.
 # Installed by setup.sh or UserData, managed by systemd (idle-shutdown.service).
 #
-# Monitors CPU, GPU (if available), and SSH sessions.
+# Monitors CPU, GPU (if available), SSH sessions, and network throughput.
 # Node is "idle" only when ALL metrics are below thresholds.
 #
 # Usage: journalctl -u idle-shutdown -f
@@ -13,6 +13,7 @@ set -euo pipefail
 IDLE_TIMEOUT_MIN="${IDLE_SHUTDOWN_TIMEOUT_MIN}"
 IDLE_TIMEOUT_SEC=$((IDLE_TIMEOUT_MIN * 60))
 CPU_THRESHOLD="${IDLE_SHUTDOWN_CPU_THRESHOLD}"
+NET_THRESHOLD_KBPS="${IDLE_SHUTDOWN_NET_THRESHOLD_KBPS:-100}"
 GRACE_PERIOD=$(( ${IDLE_SHUTDOWN_GRACE_MIN} * 60 ))
 CHECK_INTERVAL=60
 GPU_THRESHOLD=5
@@ -89,9 +90,23 @@ get_ssh_sessions() {
     echo "$count"
 }
 
+get_network_bytes() {
+    # Sum rx+tx bytes across all non-loopback interfaces from /proc/net/dev.
+    awk 'NR>2 && $1 !~ /^lo:/ { total += $2 + $10 } END { print total+0 }' /proc/net/dev
+}
+
+get_network_kbps() {
+    # Returns rx+tx throughput in KB/s averaged over a 1-second window.
+    local b1 b2
+    b1=$(get_network_bytes)
+    sleep 1
+    b2=$(get_network_bytes)
+    echo $(( (b2 - b1) / 1024 ))
+}
+
 # --- Main ---
 log "idle-shutdown daemon starting"
-log "config: timeout=${IDLE_TIMEOUT_SEC}s cpu_threshold=${CPU_THRESHOLD}% gpu_threshold=${GPU_THRESHOLD}% grace=${GRACE_PERIOD}s interval=${CHECK_INTERVAL}s"
+log "config: timeout=${IDLE_TIMEOUT_SEC}s cpu_threshold=${CPU_THRESHOLD}% gpu_threshold=${GPU_THRESHOLD}% net_threshold=${NET_THRESHOLD_KBPS}KB/s grace=${GRACE_PERIOD}s interval=${CHECK_INTERVAL}s"
 
 log "grace period: sleeping ${GRACE_PERIOD}s before monitoring"
 sleep "$GRACE_PERIOD"
@@ -103,24 +118,26 @@ while true; do
     cpu=$(get_cpu_usage)
     gpu=$(get_gpu_usage)
     ssh_count=$(get_ssh_sessions)
+    net_kbps=$(get_network_kbps)
 
     is_active=false
     [ "$cpu" -gt "$CPU_THRESHOLD" ] && is_active=true
     [ "$gpu" -gt "$GPU_THRESHOLD" ] && is_active=true
     [ "$ssh_count" -gt 0 ] && is_active=true
+    [ "$net_kbps" -gt "$NET_THRESHOLD_KBPS" ] && is_active=true
 
     now=$(date +%s)
 
     if [ "$is_active" = true ]; then
         IDLE_SINCE=""
-        log "active: cpu=${cpu}% gpu=${gpu}% ssh=${ssh_count}"
+        log "active: cpu=${cpu}% gpu=${gpu}% ssh=${ssh_count} net=${net_kbps}KB/s"
     else
         if [ -z "$IDLE_SINCE" ]; then
             IDLE_SINCE=$now
         fi
         idle_elapsed=$((now - IDLE_SINCE))
         idle_min=$((idle_elapsed / 60))
-        log "idle: cpu=${cpu}% gpu=${gpu}% ssh=${ssh_count} -- ${idle_min}m / ${IDLE_TIMEOUT_MIN}m"
+        log "idle: cpu=${cpu}% gpu=${gpu}% ssh=${ssh_count} net=${net_kbps}KB/s -- ${idle_min}m / ${IDLE_TIMEOUT_MIN}m"
 
         if [ "$idle_elapsed" -ge "$IDLE_TIMEOUT_SEC" ]; then
             log "IDLE TIMEOUT REACHED -- shutting down"

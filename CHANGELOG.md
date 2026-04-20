@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.1
+
+### Fixed
+
+- Nebius node_provider: stopped-node reuse now matches on `ray-user-node-type` (was matching on the `ray-node-type` kind), so one worker type cannot be restarted and re-tagged as another.
+- Nebius node_provider: run the SDK event loop on a dedicated thread so a slow `CreateInstance` no longer freezes the autoscaler. In-flight create/restart targets are hidden from `non_terminated_nodes` and `_set_node_tags` retries on `FAILED_PRECONDITION` to avoid racing Nebius "active operation" rejection.
+- `brr list`: wrap Nebius queries in a 30s timeout and surface errors as a yellow status line instead of aborting the whole listing.
+
 ## 0.14.0
 
 ### Changed

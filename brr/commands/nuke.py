@@ -196,29 +196,12 @@ def delete_github_ssh(region):
     except sm.exceptions.ResourceNotFoundException:
         console.print(f"  No Secrets Manager secret found ({secret_name})")
 
-    # GitHub — find key by title, delete by ID
-    if shutil.which("gh"):
-        result = subprocess.run(
-            ["gh", "ssh-key", "list"], capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            for line in result.stdout.splitlines():
-                if "brr-cluster" in line:
-                    key_id = line.split()[0]
-                    del_result = subprocess.run(
-                        ["gh", "ssh-key", "delete", key_id, "--yes"],
-                        capture_output=True, text=True,
-                    )
-                    if del_result.returncode == 0:
-                        deleted.append(f"github:{key_id}")
-                        console.print(f"  Deleted GitHub SSH key: [red]{key_id}[/red]")
-                    else:
-                        console.print(f"  [yellow]Failed to delete GitHub key {key_id}: {del_result.stderr.strip()}[/yellow]")
-                    break
-            else:
-                console.print("  No GitHub SSH key found with title 'brr-cluster'")
-    else:
-        console.print("  [yellow]gh CLI not found — skip GitHub key cleanup[/yellow]")
+    # GitHub — remove all brr-titled SSH key entries (new dedicated
+    # `brr-<hostname>` and legacy per-provider `brr-aws` / `brr-nebius` /
+    # `brr-verda` / `brr-cluster`).
+    from brr.github import remove_github_registration
+    for title in remove_github_registration():
+        deleted.append(f"github:{title}")
 
     # Remove IAM inline policies from ray-autoscaler role
     iam = boto3.client("iam")
@@ -351,10 +334,99 @@ def _nuke_nebius(project_id, progress, task, instances=True, disks=True, filesys
     return asyncio.run(_nuke())
 
 
+def _nuke_verda(progress, task, instances=True, volumes=True, ssh_keys=True):
+    """Delete Verda cloud resources (instances, volumes, SSH keys).
+
+    Verda has no firewall/security-group concept, so there's nothing else
+    to clean up on the API side.
+    """
+    from brr.verda.nodes import _verda_client
+
+    stats = {"instances": 0, "volumes": 0, "ssh_keys": 0}
+    try:
+        client = _verda_client()
+    except Exception as e:
+        console.print(f"  [yellow]Failed to initialize Verda client: {e}[/yellow]")
+        return stats
+
+    if instances:
+        progress.update(task, description="[red]Terminating Verda instances...[/red]")
+        try:
+            all_instances = client.instances.get()
+        except Exception as e:
+            console.print(f"  [yellow]Failed to list Verda instances: {e}[/yellow]")
+            all_instances = []
+        for inst in all_instances:
+            state = (getattr(inst, "status", "") or "").lower()
+            if state in ("deleting", "discontinued", "deleted"):
+                continue
+            name = getattr(inst, "hostname", "") or getattr(inst, "id", "")
+            try:
+                client.instances.action(inst.id, action="delete")
+                stats["instances"] += 1
+                console.print(f"  Terminated: [red]{name}[/red]")
+            except Exception as e:
+                console.print(f"  [yellow]Failed to terminate {inst.id}: {e}[/yellow]")
+
+    if volumes:
+        progress.update(task, description="[red]Deleting Verda volumes...[/red]")
+        # Retry loop — detaching from terminating instances takes a moment.
+        try:
+            all_volumes = client.volumes.get()
+        except Exception as e:
+            console.print(f"  [yellow]Failed to list Verda volumes: {e}[/yellow]")
+            all_volumes = []
+        pending = [(v.id, v.name or v.id) for v in all_volumes
+                   if not getattr(v, "is_os_volume", False)]
+        max_attempts = 6
+        for attempt in range(max_attempts):
+            if not pending:
+                break
+            if attempt > 0:
+                wait = 10 * attempt
+                progress.update(
+                    task, description=f"[red]Waiting {wait}s for volumes to detach...[/red]",
+                )
+                time.sleep(wait)
+                progress.update(task, description="[red]Retrying volume deletion...[/red]")
+            still = []
+            for vol_id, name in pending:
+                try:
+                    client.volumes.delete(vol_id, is_permanent=True)
+                    stats["volumes"] += 1
+                    console.print(f"  Deleted volume: [red]{name}[/red]")
+                except Exception as e:
+                    if attempt < max_attempts - 1 and "attach" in str(e).lower():
+                        still.append((vol_id, name))
+                    else:
+                        console.print(f"  [yellow]Failed to delete volume {vol_id}: {e}[/yellow]")
+            pending = still
+
+    if ssh_keys:
+        progress.update(task, description="[red]Deleting Verda SSH keys...[/red]")
+        try:
+            keys = client.ssh_keys.get()
+        except Exception as e:
+            console.print(f"  [yellow]Failed to list Verda SSH keys: {e}[/yellow]")
+            keys = []
+        for key in keys:
+            name = getattr(key, "name", "") or ""
+            if not name.startswith("brr-verda"):
+                continue
+            try:
+                client.ssh_keys.delete_by_id(key.id)
+                stats["ssh_keys"] += 1
+                console.print(f"  Deleted SSH key: [red]{name}[/red]")
+            except Exception as e:
+                console.print(f"  [yellow]Failed to delete SSH key {key.id}: {e}[/yellow]")
+
+    return stats
+
+
 @click.command()
 @click.option('--force', is_flag=True, help='Skip confirmation prompt')
 @click.option('--region', help='Specific AWS region to nuke (default: all regions)')
-@click.option('--provider', type=click.Choice(['aws', 'nebius', 'all']), default='all',
+@click.option('--provider', type=click.Choice(['aws', 'nebius', 'verda', 'all']), default='all',
               help='Provider to nuke (default: all configured)')
 def nuke(force, region, provider):
     """Nuclear option: Delete ALL cloud resources."""
@@ -363,12 +435,15 @@ def nuke(force, region, provider):
     config = read_config() or {}
     has_aws = bool(config.get("AWS_REGION"))
     has_nebius = bool(config.get("NEBIUS_PROJECT_ID"))
+    has_verda = bool(config.get("VERDA_SSH_KEY_ID"))
 
     targets = []
     if provider in ("aws", "all") and has_aws:
         targets.append("aws")
     if provider in ("nebius", "all") and has_nebius:
         targets.append("nebius")
+    if provider in ("verda", "all") and has_verda:
+        targets.append("verda")
 
     if not targets:
         console.print("[yellow]No configured providers to nuke.[/yellow]")
@@ -394,6 +469,12 @@ def nuke(force, region, provider):
             Choice(value="nebius_disks", name="Nebius — Disks", enabled=True),
             Choice(value="nebius_filesystems", name="Nebius — Shared filesystems", enabled=True),
             Choice(value="nebius_security_groups", name="Nebius — Security groups", enabled=True),
+        ])
+    if "verda" in targets:
+        choices.extend([
+            Choice(value="verda_instances", name="Verda — Compute instances", enabled=True),
+            Choice(value="verda_volumes", name="Verda — Volumes (incl. shared)", enabled=True),
+            Choice(value="verda_ssh_keys", name="Verda — SSH keys (brr-verda*)", enabled=True),
         ])
 
     if force:
@@ -424,6 +505,7 @@ def nuke(force, region, provider):
 
     aws_stats = {}
     nebius_stats = {}
+    verda_stats = {}
 
     with Progress(
         SpinnerColumn(),
@@ -530,8 +612,37 @@ def nuke(force, region, provider):
                     write_config(config)
                     console.print(f"[dim]Cleared {', '.join(stale_nebius_keys)} from config[/dim]")
 
+        # --- Verda ---
+        if "verda" in targets:
+            verda_selected = [s for s in selected if s.startswith("verda_")]
+            if verda_selected:
+                verda_stats = _nuke_verda(
+                    progress, task,
+                    instances="verda_instances" in selected,
+                    volumes="verda_volumes" in selected,
+                    ssh_keys="verda_ssh_keys" in selected,
+                )
+                stale_verda_keys = []
+                if verda_stats.get("volumes"):
+                    config["VERDA_SHARED_VOLUME_ID"] = ""
+                    config["VERDA_SHARED_MOUNT_TARGET"] = ""
+                    stale_verda_keys.extend(
+                        ["VERDA_SHARED_VOLUME_ID", "VERDA_SHARED_MOUNT_TARGET"]
+                    )
+                if verda_stats.get("ssh_keys"):
+                    config["VERDA_SSH_KEY_ID"] = ""
+                    stale_verda_keys.append("VERDA_SSH_KEY_ID")
+                if stale_verda_keys:
+                    from brr.state import write_config
+                    write_config(config)
+                    console.print(f"[dim]Cleared {', '.join(stale_verda_keys)} from config[/dim]")
+
         # Clean up local SSH config entries (scoped to targeted providers)
-        has_instance_deletion = "aws_instances" in selected or "nebius_instances" in selected
+        has_instance_deletion = (
+            "aws_instances" in selected
+            or "nebius_instances" in selected
+            or "verda_instances" in selected
+        )
         if has_instance_deletion:
             progress.update(task, description="[red]Cleaning up local SSH config...[/red]")
             from brr.ssh import remove_ssh_config
@@ -544,6 +655,8 @@ def nuke(force, region, provider):
                     if "aws_instances" in selected and alias.startswith("brr-aws-"):
                         remove_ssh_config(alias)
                     elif "nebius_instances" in selected and alias.startswith("brr-nebius-"):
+                        remove_ssh_config(alias)
+                    elif "verda_instances" in selected and alias.startswith("brr-verda-"):
                         remove_ssh_config(alias)
 
         # Clean up staging directories
@@ -593,6 +706,15 @@ def nuke(force, region, provider):
         ]:
             if key in nebius_stats:
                 lines.append(f"  {label}: {nebius_stats[key]}")
+    if verda_stats:
+        lines.append("[bold]Verda:[/bold]")
+        for key, label in [
+            ("instances", "Instances terminated"),
+            ("volumes", "Volumes deleted"),
+            ("ssh_keys", "SSH keys deleted"),
+        ]:
+            if key in verda_stats:
+                lines.append(f"  {label}: {verda_stats[key]}")
 
     console.print("\n" + "=" * 50)
     console.print(Panel.fit(

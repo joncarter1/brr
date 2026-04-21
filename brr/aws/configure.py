@@ -1,9 +1,6 @@
 import json
 import os
-import shutil
 import stat
-import subprocess
-import tempfile
 import time
 from datetime import datetime
 
@@ -187,54 +184,6 @@ def get_or_create_efs(efs_client, ec2, vpc_id, sg_id):
     return fs_id
 
 
-def setup_github_ssh(key_path):
-    """Add SSH public key to GitHub. Returns the private key path for file_mounts."""
-    if not shutil.which("gh"):
-        console.print("[yellow]gh CLI not found — skipping GitHub key registration[/yellow]")
-        console.print("[yellow]Install gh and run 'brr configure aws' again to add the key[/yellow]")
-        return key_path
-
-    auth_check = subprocess.run(
-        ["gh", "auth", "status"], capture_output=True, text=True
-    )
-    if auth_check.returncode != 0:
-        console.print("[yellow]gh CLI not authenticated — skipping GitHub key registration[/yellow]")
-        console.print("[yellow]Run 'gh auth login' and then 'brr configure aws' again[/yellow]")
-        return key_path
-
-    list_result = subprocess.run(
-        ["gh", "ssh-key", "list"], capture_output=True, text=True
-    )
-    if list_result.returncode == 0:
-        for line in list_result.stdout.splitlines():
-            if "brr-aws" in line:
-                console.print("SSH key already registered on GitHub: [green]brr-aws[/green]")
-                return key_path
-
-    pubkey_result = subprocess.run(
-        ["ssh-keygen", "-y", "-f", key_path], capture_output=True, text=True
-    )
-    if pubkey_result.returncode != 0:
-        console.print(f"[red]Failed to derive public key: {pubkey_result.stderr.strip()}[/red]")
-        return key_path
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".pub", delete=False) as tmp:
-        tmp.write(pubkey_result.stdout)
-        tmp_path = tmp.name
-
-    try:
-        add_result = subprocess.run(
-            ["gh", "ssh-key", "add", tmp_path, "--title", "brr-aws"],
-            capture_output=True, text=True,
-        )
-        if add_result.returncode == 0:
-            console.print("Added SSH key to GitHub: [green]brr-aws[/green]")
-        else:
-            console.print(f"[red]Failed to add key to GitHub: {add_result.stderr.strip()}[/red]")
-    finally:
-        os.unlink(tmp_path)
-
-    return key_path
 
 
 def _attach_iam_passrole_policy():
@@ -341,7 +290,8 @@ def configure_aws():
     )
     github_ssh_key = ""
     if github_ssh_enabled:
-        github_ssh_key = setup_github_ssh(key_path)
+        from brr.github import ensure_github_key
+        github_ssh_key = ensure_github_key(existing)
 
     updates = {
         "AWS_REGION": region,

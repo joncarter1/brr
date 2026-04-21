@@ -1,9 +1,7 @@
 import json
 import os
-import shutil
 import stat
 import subprocess
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -573,60 +571,6 @@ def _get_or_create_ssh_key():
     return key_path
 
 
-def _setup_github_ssh(ssh_key):
-    """Add SSH public key to GitHub and return the private key path for file_mounts.
-
-    Returns the private key path (for GITHUB_SSH_KEY config), or empty string on failure.
-    """
-    # Derive public key
-    pubkey_result = subprocess.run(
-        ["ssh-keygen", "-y", "-f", ssh_key], capture_output=True, text=True
-    )
-    if pubkey_result.returncode != 0:
-        console.print(f"[red]Failed to derive public key: {pubkey_result.stderr.strip()}[/red]")
-        return ssh_key  # Still return path so key is copied for GitHub access
-
-    if not shutil.which("gh"):
-        console.print("[yellow]gh CLI not found — skipping GitHub key registration[/yellow]")
-        console.print("[yellow]Install gh and run 'brr configure nebius' again to add the key[/yellow]")
-        return ssh_key
-
-    auth_check = subprocess.run(
-        ["gh", "auth", "status"], capture_output=True, text=True
-    )
-    if auth_check.returncode != 0:
-        console.print("[yellow]gh CLI not authenticated — skipping GitHub key registration[/yellow]")
-        console.print("[yellow]Run 'gh auth login' and then 'brr configure nebius' again[/yellow]")
-        return ssh_key
-
-    # Check if key already registered
-    list_result = subprocess.run(
-        ["gh", "ssh-key", "list"], capture_output=True, text=True
-    )
-    if list_result.returncode == 0:
-        for line in list_result.stdout.splitlines():
-            if "brr-nebius" in line:
-                console.print("SSH key already registered on GitHub: [green]brr-nebius[/green]")
-                return ssh_key
-
-    # Add public key to GitHub
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".pub", delete=False) as tmp:
-        tmp.write(pubkey_result.stdout)
-        tmp_path = tmp.name
-
-    try:
-        add_result = subprocess.run(
-            ["gh", "ssh-key", "add", tmp_path, "--title", "brr-nebius"],
-            capture_output=True, text=True,
-        )
-        if add_result.returncode == 0:
-            console.print("Added SSH key to GitHub: [green]brr-nebius[/green]")
-        else:
-            console.print(f"[red]Failed to add key to GitHub: {add_result.stderr.strip()}[/red]")
-    finally:
-        os.unlink(tmp_path)
-
-    return ssh_key
 
 
 def configure_nebius():
@@ -805,7 +749,8 @@ def configure_nebius():
         "Set up GitHub SSH access for clusters?",
         default=bool(github_ssh_key),
     ):
-        github_ssh_key = _setup_github_ssh(ssh_key)
+        from brr.github import ensure_github_key
+        github_ssh_key = ensure_github_key(existing)
     else:
         github_ssh_key = ""
 

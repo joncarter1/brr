@@ -14,7 +14,7 @@ classifiers = [
     "Topic :: System :: Clustering",
     "Programming Language :: Python :: 3",
 ]
-dependencies = ["click", "pyyaml", "rich", "InquirerPy", "boto3", "nebius>=0.3.37", "ray[default]"]
+dependencies = ["click", "pyyaml", "rich", "InquirerPy", "boto3", "nebius>=0.3.37", "verda>=1.24.0", "ray[default]"]
 
 [project.urls]
 Homepage = "https://github.com/joncarter1/brr"

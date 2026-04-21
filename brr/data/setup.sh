@@ -183,6 +183,115 @@ if [ "${PROVIDER:-}" = "nebius" ] && [ -n "${NEBIUS_FILESYSTEM_ID:-}" ]; then
   mkdir -p "$HOME/code"
 fi
 
+# --- Shared filesystem mount (Verda) ---
+# VERDA_SHARED_MOUNT_TARGET takes one of three forms:
+#   host:/path     → NFS mount
+#   LABEL=... / UUID=... / /dev/...  → block device
+#   (empty)        → discover at runtime via lsblk for the most recently
+#                    attached block device (shared NVMe volumes appear as
+#                    /dev/vdX on Verda instances).
+if [ "${PROVIDER:-}" = "verda" ] && [ -n "${VERDA_SHARED_VOLUME_ID:-}" ]; then
+  MOUNT_POINT="/shared"
+
+  if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
+    info "Verda shared filesystem already mounted at $MOUNT_POINT"
+  else
+    info "Mounting Verda shared filesystem at $MOUNT_POINT"
+    sudo mkdir -p "$MOUNT_POINT"
+
+    _verda_mounted=0
+    _target="${VERDA_SHARED_MOUNT_TARGET:-}"
+
+    case "$_target" in
+      *":/"*)
+        for i in 1 2 3 4 5; do
+          if sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,soft,timeo=600,retrans=2,noresvport \
+            "$_target" "$MOUNT_POINT" 2>/dev/null; then
+            _verda_mounted=1
+            break
+          fi
+          info "NFS mount attempt $i failed, retrying in 5s..."
+          sleep 5
+        done
+        ;;
+      LABEL=*|UUID=*|/dev/*)
+        if sudo mount "$_target" "$MOUNT_POINT" 2>/dev/null; then
+          _verda_mounted=1
+        fi
+        ;;
+      "")
+        # Autodiscover: first unmounted non-OS disk with no partitions.
+        # VERDA mounts the OS volume at /, so the shared volume is the
+        # next attached block device to surface (typically /dev/vdb or
+        # /dev/nvme1n1).
+        for dev in $(lsblk -dno NAME,TYPE 2>/dev/null | awk '$2=="disk"{print "/dev/"$1}'); do
+          if [ "$dev" = "/dev/$(lsblk -no PKNAME $(findmnt -n -o SOURCE /) 2>/dev/null)" ]; then
+            continue
+          fi
+          if findmnt --source "$dev" >/dev/null 2>&1; then
+            continue
+          fi
+          if sudo mount "$dev" "$MOUNT_POINT" 2>/dev/null; then
+            _target="$dev"
+            _verda_mounted=1
+            break
+          fi
+        done
+        ;;
+    esac
+
+    if [ "$_verda_mounted" = "1" ]; then
+      sudo chown "$USER:$USER" "$MOUNT_POINT"
+      info "Verda shared filesystem mounted at $MOUNT_POINT (source: $_target)"
+    else
+      info "WARNING: Failed to mount Verda shared filesystem"
+    fi
+  fi
+
+  # Add to fstab for persistence across reboots (only if we have a concrete target)
+  if [ -n "${VERDA_SHARED_MOUNT_TARGET:-}" ] && ! grep -q "$MOUNT_POINT" /etc/fstab 2>/dev/null; then
+    case "$VERDA_SHARED_MOUNT_TARGET" in
+      *":/"*)
+        echo "$VERDA_SHARED_MOUNT_TARGET $MOUNT_POINT nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,soft,timeo=600,retrans=2,noresvport,_netdev 0 0" \
+          | sudo tee -a /etc/fstab >/dev/null
+        ;;
+      LABEL=*|UUID=*|/dev/*)
+        echo "$VERDA_SHARED_MOUNT_TARGET $MOUNT_POINT auto defaults,nofail 0 2" \
+          | sudo tee -a /etc/fstab >/dev/null
+        ;;
+    esac
+  fi
+
+  # Save ray_bootstrap_config.yaml before bind-mount shadows it
+  if [ -f "$HOME/ray_bootstrap_config.yaml" ] && [ ! -L "$HOME/ray_bootstrap_config.yaml" ]; then
+    cp "$HOME/ray_bootstrap_config.yaml" /tmp/ray_bootstrap_config.yaml
+  fi
+
+  # Persistent home directory on shared filesystem. Bind to "$MOUNT_POINT/home/$USER"
+  # so Verda (SSH user = root, $HOME = /root) and Ubuntu-based providers (ubuntu,
+  # /home/ubuntu) both get isolated persistent homes keyed by their SSH user.
+  _home_dir="$MOUNT_POINT/home/$USER"
+  if mountpoint -q "$MOUNT_POINT" 2>/dev/null && ! mountpoint -q "$HOME" 2>/dev/null; then
+    if [ ! -d "$_home_dir" ]; then
+      info "First boot: seeding persistent home on $MOUNT_POINT"
+      sudo mkdir -p "$_home_dir"
+      sudo chown "$USER:$USER" "$_home_dir"
+      rsync -a "$HOME/" "$_home_dir/"
+    fi
+    sudo mount --bind "$_home_dir" "$HOME"
+    info "Home bind-mounted from $_home_dir"
+  fi
+
+  # Redirect ray_bootstrap_config.yaml to instance-local /tmp
+  if [ ! -L "$HOME/ray_bootstrap_config.yaml" ]; then
+    rm -f "$HOME/ray_bootstrap_config.yaml"
+    ln -s /tmp/ray_bootstrap_config.yaml "$HOME/ray_bootstrap_config.yaml"
+  fi
+
+  # Persistent code directory
+  mkdir -p "$HOME/code"
+fi
+
 # --- Ensure-mount helper (handles cached node restarts) ---
 # When Ray restarts a cached stopped node, it skips setup_commands and runs
 # worker_start_ray_commands directly. The NFS/virtiofs mount comes back via
@@ -208,10 +317,13 @@ if ! mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
   exit 1
 fi
 
-# Re-establish home bind-mount if needed
-if [ -d "$MOUNT_POINT/home/ubuntu" ] && ! mountpoint -q "$HOME" 2>/dev/null; then
-  sudo mount --bind "$MOUNT_POINT/home/ubuntu" "$HOME"
-  echo "[brr-ensure-mount] Home bind-mounted from $MOUNT_POINT"
+# Re-establish home bind-mount if needed. Use the current user's home
+# directory name so this works for Verda (root) as well as ubuntu-based
+# providers (ubuntu).
+_home_dir="$MOUNT_POINT/home/$USER"
+if [ -d "$_home_dir" ] && ! mountpoint -q "$HOME" 2>/dev/null; then
+  sudo mount --bind "$_home_dir" "$HOME"
+  echo "[brr-ensure-mount] Home bind-mounted from $_home_dir"
 fi
 
 # Redirect ray_bootstrap_config.yaml to instance-local /tmp
@@ -404,6 +516,72 @@ if [ "${PROVIDER:-}" = "nebius" ]; then
     aws configure set region "${NEBIUS_REGION:-eu-north1}"
     aws configure set endpoint_url "https://storage.${NEBIUS_REGION:-eu-north1}.nebius.cloud:443"
     info "AWS CLI configured for Nebius Object Storage"
+  fi
+fi
+
+# --- Verda firewall (ufw lockdown) ---
+# Verda has no cloud-level firewall, so every instance port is public by
+# default. Lock down to SSH only — single-node clusters need nothing else
+# externally, and the Ray dashboard / agent / GCS should never be on the
+# open internet. Multi-node clusters need a worker allowlist mechanism
+# that isn't wired up yet; those templates are currently single-node only.
+if [ "${PROVIDER:-}" = "verda" ]; then
+  if ! command -v ufw >/dev/null 2>&1; then
+    info "Installing ufw"
+    sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y ufw
+  fi
+  if ! sudo ufw status 2>/dev/null | grep -q "Status: active"; then
+    info "Enabling ufw (default deny incoming, allow SSH)"
+    sudo ufw --force reset >/dev/null
+    sudo ufw default deny incoming
+    sudo ufw default allow outgoing
+    sudo ufw allow in on lo
+    sudo ufw allow 22/tcp
+    sudo ufw --force enable
+    info "ufw active — only SSH (22/tcp) and loopback are allowed inbound"
+  else
+    info "ufw already active"
+    # Still ensure SSH is allowed (idempotent) so we don't lock ourselves out
+    sudo ufw allow 22/tcp >/dev/null
+  fi
+fi
+
+# --- Verda provider support ---
+if [ "${PROVIDER:-}" = "verda" ]; then
+  # Install Verda SDK so the node provider can create workers
+  if ! "$VENVDIR/bin/python" -c "import verda" >/dev/null 2>&1; then
+    info "Installing Verda SDK into the virtual environment"
+    ( . "$VENVDIR/bin/activate" && "$UV_REAL" pip install verda )
+  else
+    info "Verda SDK already installed in the virtual environment"
+  fi
+
+  # Copy node provider to a persistent location (/tmp is cleared on reboot).
+  if [ -d "/opt/brr/staging/provider_lib" ]; then
+    sudo mkdir -p /opt/brr
+    sudo cp -r /opt/brr/staging/provider_lib /opt/brr/provider_lib
+    sudo chmod -R a+rX /opt/brr/provider_lib
+    info "Installed node provider to /opt/brr/provider_lib"
+  fi
+
+  # Set PYTHONPATH in /etc/environment so it's available to all processes
+  # (including non-interactive SSH commands like `ray start`).
+  if ! grep -q 'PYTHONPATH.*/opt/brr/provider_lib' /etc/environment 2>/dev/null; then
+    echo 'PYTHONPATH=/opt/brr/provider_lib' | sudo tee -a /etc/environment >/dev/null
+  fi
+
+  # Keep the autoscaler's tag file on local disk. /shared may be NFS-backed
+  # and `fcntl.flock` on NFS can be unreliable; /tmp avoids that class of bug.
+  if ! grep -q 'VERDA_TAG_STORE_PATH' /etc/environment 2>/dev/null; then
+    echo 'VERDA_TAG_STORE_PATH=/tmp/verda-tags.json' | sudo tee -a /etc/environment >/dev/null
+  fi
+
+  # Place Verda credentials (OAuth client id/secret) where the SDK expects them
+  if [ -f "/opt/brr/staging/verda_credentials" ]; then
+    mkdir -p "$HOME/.verda"
+    cp "/opt/brr/staging/verda_credentials" "$HOME/.verda/credentials"
+    chmod 600 "$HOME/.verda/credentials"
+    info "Verda credentials configured"
   fi
 fi
 

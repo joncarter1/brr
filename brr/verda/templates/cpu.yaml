@@ -1,0 +1,57 @@
+# brr Verda template — single CPU node (dev box)
+# Based on Ray cluster YAML: https://docs.ray.io/en/latest/cluster/vms/references/ray-cluster-configuration.html
+#
+# CPU.8V.32G: 8 vCPU, 32GB RAM. Available in all Verda datacenters.
+# Cheap dev box (~$0.06/hr on-demand).
+#
+# Currently single-node only. Multi-node Verda clusters need a host-level
+# firewall allowlist across worker IPs (Verda has no cloud firewall); that
+# mechanism isn't wired up yet.
+
+_brr:
+  idle_shutdown_head: true
+
+max_workers: 0
+idle_timeout_minutes: 5
+
+provider:
+  type: external
+  module: brr.verda.node_provider.VerdaNodeProvider
+  location: FIN-01
+  ssh_key_ids: ["{{VERDA_SSH_KEY_ID}}"]
+  shared_volume_id: "{{VERDA_SHARED_VOLUME_ID}}"
+  cpu_image: "{{VERDA_CPU_IMAGE}}"
+
+auth:
+  ssh_user: root
+  ssh_private_key: {{VERDA_SSH_KEY}}
+
+head_node_type: ray.head.default
+
+available_node_types:
+  ray.head.default:
+    resources:
+      CPU: 8
+    node_config:
+      instance_type: "CPU.8V.32G"
+      location: FIN-01
+      image: "{{VERDA_CPU_IMAGE}}"
+      os_volume_size: 100
+      contract: PAY_AS_YOU_GO
+
+# Upload local files/dirs to all nodes (merged with brr's own file_mounts).
+# file_mounts:
+#   /remote/path: /local/path
+
+# Commands run on all nodes after brr's setup.sh (and project setup.sh if present).
+# setup_commands:
+#   - echo "extra setup here"
+
+# WARNING: You probably don't need to modify the start_ray_commands below.
+head_start_ray_commands:
+    - source /opt/brr/venv/bin/activate && ray stop
+    - source /opt/brr/venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=/tmp/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
+
+worker_start_ray_commands:
+    - source /opt/brr/venv/bin/activate && ray stop
+    - source /opt/brr/venv/bin/activate && ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076

@@ -16,6 +16,10 @@ CONFIG_DEFAULTS = {
     "NEBIUS_SERVICE_ACCOUNT_ID": "",
     "NEBIUS_S3_ACCESS_KEY_ID": "",
     "NEBIUS_S3_SECRET_KEY": "",
+    "VERDA_SHARED_VOLUME_ID": "",
+    "VERDA_SHARED_MOUNT_TARGET": "",
+    "VERDA_GPU_IMAGE": "ubuntu-24.04-cuda-12.8-open-docker",
+    "VERDA_CPU_IMAGE": "ubuntu-24.04-cuda-12.8-open-docker",
 }
 
 _home_state = Path.home() / ".brr"
@@ -168,6 +172,7 @@ def read_merged_config(project_root=None):
 _REQUIRED_KEYS = {
     "aws": ["AWS_REGION", "AWS_KEY_NAME", "AWS_SECURITY_GROUP"],
     "nebius": ["NEBIUS_PROJECT_ID", "NEBIUS_SUBNET_ID", "NEBIUS_SSH_KEY", "NEBIUS_SECURITY_GROUP_ID"],
+    "verda": ["VERDA_SSH_KEY", "VERDA_SSH_KEY_ID"],
 }
 
 

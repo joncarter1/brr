@@ -1,0 +1,76 @@
+# brr Verda template — single H100 GPU node
+# Based on Ray cluster YAML: https://docs.ray.io/en/latest/cluster/vms/references/ray-cluster-configuration.html
+#
+# {{VAR}} placeholders are filled from ~/.brr/config.env (set by `brr configure`).
+# brr auto-injects setup.sh, file_mounts, and project setup into the final YAML.
+# Add setup_commands to run your own commands after brr setup completes.
+#
+# Verda node_config fields:
+#   instance_type    — Verda SKU (e.g. 1H100.80S.32V, CPU.8V.32G)
+#   location         — Datacenter code (FIN-01, FIN-02, FIN-03)
+#   image            — OS image slug or detached OS volume ID
+#   os_volume_size   — GB (alias: disk_size_gb)
+#   contract         — PAY_AS_YOU_GO | LONG_TERM | SPOT
+#   is_spot          — Request a spot instance (with contract=SPOT)
+#   ssh_key_ids      — Override provider-level ssh_key_ids for this node type
+#   resources        — required: tell Ray what the node has (CPU: N, GPU: N)
+
+_brr:
+  idle_shutdown_head: true
+
+max_workers: 0
+idle_timeout_minutes: 5
+
+provider:
+  type: external
+  module: brr.verda.node_provider.VerdaNodeProvider
+  location: FIN-02
+  ssh_key_ids: ["{{VERDA_SSH_KEY_ID}}"]
+  shared_volume_id: "{{VERDA_SHARED_VOLUME_ID}}"
+  gpu_image: "{{VERDA_GPU_IMAGE}}"
+  cpu_image: "{{VERDA_CPU_IMAGE}}"
+  # cache_stopped_nodes: true        # Stop instead of delete on scale-down
+  # stopped_node_action: shutdown    # 'shutdown' (offline) or 'hibernate'
+
+auth:
+  ssh_user: root
+  ssh_private_key: {{VERDA_SSH_KEY}}
+
+head_node_type: ray.head.default
+
+available_node_types:
+  ray.head.default:
+    resources:
+      CPU: 32
+      GPU: 1
+    node_config:
+      instance_type: "1H100.80S.32V"
+      location: FIN-02
+      image: "{{VERDA_GPU_IMAGE}}"
+      os_volume_size: 500
+      contract: PAY_AS_YOU_GO
+
+# Upload local files/dirs to all nodes (merged with brr's own file_mounts).
+# file_mounts:
+#   /remote/path: /local/path
+
+# Commands run on all nodes after brr's setup.sh (and project setup.sh if present).
+# setup_commands:
+#   - echo "extra setup here"
+
+# Commands run only on the head node after setup_commands.
+# head_setup_commands:
+#   - echo "head node ready"
+
+# Commands run only on worker nodes after setup_commands.
+# worker_setup_commands:
+#   - echo "worker ready"
+
+# WARNING: You probably don't need to modify the start_ray_commands below.
+head_start_ray_commands:
+    - source /opt/brr/venv/bin/activate && ray stop
+    - source /opt/brr/venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=/tmp/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
+
+worker_start_ray_commands:
+    - source /opt/brr/venv/bin/activate && ray stop
+    - source /opt/brr/venv/bin/activate && ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076

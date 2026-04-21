@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from brr.state import CONFIG_PATH, staging_dir_for, rendered_yaml_for
+from brr.state import CONFIG_DEFAULTS, CONFIG_PATH, read_config, staging_dir_for, rendered_yaml_for
 
 # Global args: friendly aliases available for all templates.
 # "spot" has special handling (toggle InstanceMarketOptions).
@@ -292,12 +292,26 @@ def apply_overrides(config, overrides, template_aliases=None):
                 head_nc["disk_size_gb"] = size
             continue
 
-        # Special: spot toggle
+        # Special: spot toggle — dispatched by provider module so Nebius
+        # (preemptible) and Verda (is_spot + contract=SPOT) don't collide
+        # under the shared provider.type == "external" banner.
         if key == "spot":
-            is_nebius = config.get("provider", {}).get("type") == "external"
+            provider_block = config.get("provider", {})
+            is_external = provider_block.get("type") == "external"
+            module = provider_block.get("module", "")
             enabled = value.lower() in ("true", "yes", "1")
 
-            if is_nebius:
+            if is_external and "verda" in module:
+                for nt in config.get("available_node_types", {}).values():
+                    nc = nt.get("node_config", {})
+                    if enabled:
+                        nc["is_spot"] = True
+                        nc["contract"] = "SPOT"
+                    else:
+                        nc.pop("is_spot", None)
+                        if nc.get("contract") == "SPOT":
+                            nc["contract"] = "PAY_AS_YOU_GO"
+            elif is_external:
                 for nt in config.get("available_node_types", {}).values():
                     nc = nt.get("node_config", {})
                     if enabled:
@@ -412,14 +426,15 @@ def prepare_staging(name, provider="aws", project_root=None):
     (staging / "idle-shutdown.sh").write_text(pkg.joinpath("idle-shutdown.sh").read_text())
     (staging / "sync-repo.sh").write_text(pkg.joinpath("sync-repo.sh").read_text())
 
-    # Copy config.env, injecting PROVIDER for setup.sh to branch on.
-    config_text = ""
+    # Write config.env to staging: merge CONFIG_DEFAULTS with the user's
+    # config.env so new keys added after a user last ran `brr configure` are
+    # still available on the remote (setup.sh runs with `set -u`). Inject
+    # PROVIDER for setup.sh to branch on.
     if CONFIG_PATH.exists():
-        config_text = CONFIG_PATH.read_text()
-    if config_text and f'PROVIDER="' not in config_text:
-        config_text = config_text.rstrip("\n") + f'\nPROVIDER="{provider}"\n'
-    if config_text:
-        (staging / "config.env").write_text(config_text)
+        merged = {**CONFIG_DEFAULTS, **read_config()}
+        merged["PROVIDER"] = provider
+        lines = [f'{k}="{v}"' for k, v in merged.items()]
+        (staging / "config.env").write_text("\n".join(lines) + "\n")
 
     # For Nebius: copy the node provider module to staging so it's importable
     # on the head node for Ray's autoscaler
@@ -435,6 +450,23 @@ def prepare_staging(name, provider="aws", project_root=None):
         creds = Path.home() / ".nebius" / "credentials.json"
         if creds.exists():
             (staging / "nebius_credentials.json").write_text(creds.read_text())
+
+    # For Verda: ship the node provider + tag store + the `brr.verda.nodes`
+    # credentials helper they both rely on.
+    if provider == "verda":
+        provider_lib_root = staging / "provider_lib"
+        verda_lib = provider_lib_root / "brr" / "verda"
+        verda_lib.mkdir(parents=True, exist_ok=True)
+        (provider_lib_root / "brr" / "__init__.py").touch()
+        (verda_lib / "__init__.py").touch()
+        src_dir = Path(__file__).parent / "verda"
+        for fname in ("node_provider.py", "tag_store.py", "nodes.py"):
+            (verda_lib / fname).write_text((src_dir / fname).read_text())
+
+        # Copy the credentials INI so setup.sh can install it at ~/.verda/credentials.
+        creds = Path.home() / ".verda" / "credentials"
+        if creds.exists():
+            (staging / "verda_credentials").write_text(creds.read_text())
 
     # Copy GitHub SSH key if configured (delivered to nodes via file_mounts)
     from brr.state import read_config as _read_config
@@ -471,10 +503,18 @@ def inject_brr_infra(config, staging, git_info=None, brr_meta=None):
     If git_info is provided, sets up git clone of the project repo on the cluster.
     If brr_meta has idle_shutdown_head=False, disables the idle-shutdown daemon on the head node.
     """
-    # initialization_commands: pip must exist before Ray's internal setup
+    # initialization_commands: pip must exist before Ray's internal setup.
+    # Wait for cloud-init / unattended-upgrades to release the apt lock,
+    # then use DPkg::Lock::Timeout as a belt-and-suspenders guard against
+    # any remaining races. Without this, fresh VMs (Verda in particular)
+    # race Ray's apt-get install with the image's first-boot upgrade.
     config.setdefault("initialization_commands", [])
     config["initialization_commands"].insert(
-        0, "export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a && sudo -E apt-get update -y && sudo -E apt-get install -y python3-pip"
+        0,
+        "export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a && "
+        "(sudo cloud-init status --wait 2>/dev/null || true) && "
+        "sudo -E apt-get -o DPkg::Lock::Timeout=300 update -y && "
+        "sudo -E apt-get -o DPkg::Lock::Timeout=300 install -y python3-pip",
     )
 
     # file_mounts: rsync staging to /tmp (writable without sudo). Ray runs
@@ -557,10 +597,13 @@ def inject_brr_infra(config, staging, git_info=None, brr_meta=None):
                 for cmd in config[key]
             ]
 
-    # For external providers: embed SSH public key content into node_configs
-    # so the NodeProvider can inject it via cloud-init. We embed the content
-    # (not a file path) so it works both locally and on the head node.
-    if config.get("provider", {}).get("type") == "external":
+    # For Nebius: embed SSH public key content into node_configs so the
+    # NodeProvider can inject it via cloud-init. We embed the content (not
+    # a file path) so it works both locally and on the head node. Verda
+    # doesn't need this — SSH keys are pre-registered with the Verda API
+    # and attached via `ssh_key_ids` on instance create.
+    provider_block = config.get("provider", {})
+    if provider_block.get("type") == "external" and "nebius" in provider_block.get("module", ""):
         private_key = config.get("auth", {}).get("ssh_private_key", "")
         if private_key:
             pub_key_path = private_key + ".pub"

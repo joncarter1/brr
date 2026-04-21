@@ -11,16 +11,24 @@ from rich.console import Console
 console = Console()
 
 
-def update_ssh_config(host_alias, head_ip, ssh_key):
+def update_ssh_config(host_alias, head_ip, ssh_key, ssh_user="ubuntu"):
     """Write or update a Host block in ~/.ssh/config.
 
     host_alias is the full SSH alias (e.g. 'brr-aws-h100', 'brr-nebius-h100').
+    Also strips any stale host key for this IP from known_hosts — cloud IPs
+    are recycled constantly, and a stale entry would trigger strict-checking
+    failures on first connect.
     """
+    # Purge stale host keys for this IP. -R is idempotent and no-op on miss.
+    subprocess.run(
+        ["ssh-keygen", "-R", head_ip],
+        capture_output=True, text=True, check=False,
+    )
 
     block = (
         f"Host {host_alias}\n"
         f"    HostName {head_ip}\n"
-        f"    User ubuntu\n"
+        f"    User {ssh_user}\n"
         f"    IdentityFile {ssh_key}\n"
         f"    StrictHostKeyChecking accept-new\n"
         f"    ProxyCommand none\n"

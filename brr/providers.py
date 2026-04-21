@@ -25,6 +25,10 @@ class Provider:
         """Return the SSH private key path from config."""
         raise NotImplementedError
 
+    def ssh_user(self, config) -> str:
+        """Return the SSH username for this provider. Default: 'ubuntu'."""
+        return "ubuntu"
+
     def terminate_cluster(self, config, cluster_name):
         """Terminate all instances for a cluster. Return count terminated."""
         raise NotImplementedError
@@ -55,6 +59,9 @@ def get_provider(name):
         elif name == "nebius":
             from brr.nebius.provider import NebiusProvider
             register_provider(NebiusProvider())
+        elif name == "verda":
+            from brr.verda.provider import VerdaProvider
+            register_provider(VerdaProvider())
         else:
             raise ValueError(f"Unknown provider: {name}")
     return _PROVIDERS[name]

@@ -133,7 +133,7 @@ def _resolve_provider(name):
     if ":" not in name:
         raise click.UsageError(
             f"Template '{name}' requires a provider prefix.\n"
-            f"Use provider:name syntax (e.g. aws:{name}, nebius:{name})."
+            f"Use provider:name syntax (e.g. aws:{name}, nebius:{name}, verda:{name})."
         )
     provider, _, tpl = name.partition(":")
     return provider, tpl
@@ -179,7 +179,7 @@ def _ray_cmd(provider="aws"):
                 cwd=pr, capture_output=True,
             )
             if result.returncode != 0:
-                sdk = "boto3" if provider == "aws" else provider
+                sdk = {"aws": "boto3"}.get(provider, provider)
                 console.print(
                     f"[red]Ray is not installed in your project.[/red]\n"
                     f"Add cluster dependencies with:\n"
@@ -283,7 +283,7 @@ def _sync_ssh_config(provider, cluster_name, display_name=None):
     head_ip = prov.find_head_ip(config, cluster_name)
     if head_ip:
         ssh_alias = cluster_ssh_alias(provider, cluster_name)
-        update_ssh_config(ssh_alias, head_ip, prov.ssh_key(config))
+        update_ssh_config(ssh_alias, head_ip, prov.ssh_key(config), prov.ssh_user(config))
         attach_name = display_name or cluster_name
         console.print(f"Updated local SSH config: [green]{ssh_alias}[/green]")
         console.print(f"  Connect with: [bold]brr attach {attach_name}[/bold]")
@@ -374,6 +374,51 @@ def up(template, overrides, yes, dry_run, no_project):
                 raise click.UsageError(
                     f"Unknown node_config keys in {nt_name} (typo?): {', '.join(sorted(unknown))}"
                 )
+
+    # Verda: validate node_config keys to catch typos early
+    if provider == "verda":
+        from brr.verda.node_provider import VerdaNodeProvider
+        for nt_name, nt in rendered.get("available_node_types", {}).items():
+            nc = nt.get("node_config", {})
+            unknown = set(nc) - VerdaNodeProvider._KNOWN_NODE_CONFIG_KEYS
+            if unknown:
+                raise click.UsageError(
+                    f"Unknown node_config keys in {nt_name} (typo?): {', '.join(sorted(unknown))}"
+                )
+
+        # Shared-volume location sanity check. Verda volumes are
+        # region-scoped, so instances must be in the same datacenter as
+        # the shared volume to attach it. Surface a clear error instead
+        # of the opaque 'volumes.attach' API failure we'd get at launch.
+        shared_volume_id = rendered.get("provider", {}).get("shared_volume_id", "")
+        if shared_volume_id and "{{" not in str(shared_volume_id):
+            template_locations = {
+                nt.get("node_config", {}).get("location")
+                for nt in rendered.get("available_node_types", {}).values()
+                if nt.get("node_config", {}).get("location")
+            }
+            provider_loc = rendered.get("provider", {}).get("location")
+            if provider_loc and "{{" not in str(provider_loc):
+                template_locations.add(provider_loc)
+            try:
+                from brr.verda.nodes import _verda_client
+                volume = _verda_client().volumes.get_by_id(shared_volume_id)
+                volume_location = getattr(volume, "location", None)
+            except Exception as e:
+                console.print(f"[yellow]Warning: could not verify shared-volume location: {e}[/yellow]")
+                volume_location = None
+
+            if volume_location and template_locations:
+                mismatched = {loc for loc in template_locations if loc != volume_location}
+                if mismatched:
+                    raise click.UsageError(
+                        f"Shared volume {shared_volume_id} lives in "
+                        f"{volume_location}, but the template wants to launch in "
+                        f"{', '.join(sorted(mismatched))}. "
+                        f"Edit the template to use location: {volume_location}, "
+                        f"or run `brr configure verda` to pick a different shared "
+                        f"volume."
+                    )
 
     if project_root and "cluster_name" in rendered:
         console.print(
@@ -575,7 +620,7 @@ def clean(template, yes, no_project):
     else:
         # Clean all configured providers
         providers_to_clean = [
-            (p, None) for p in ("aws", "nebius")
+            (p, None) for p in ("aws", "nebius", "verda")
             if is_provider_configured(p, config)
         ]
         if not providers_to_clean:
@@ -647,7 +692,7 @@ def vscode(cluster, no_project):
         raise SystemExit(1)
 
     host = cluster_ssh_alias(provider, cluster_name)
-    update_ssh_config(host, head_ip, prov.ssh_key(config))
+    update_ssh_config(host, head_ip, prov.ssh_key(config), prov.ssh_user(config))
 
     remote_path = f"/home/ubuntu/code/{project_root.name}" if project_root else "/home/ubuntu/code"
 
@@ -685,7 +730,7 @@ def list_cmd(show_all):
     ray_statuses = {}
     any_queried = False
 
-    for provider_name in ("aws", "nebius"):
+    for provider_name in ("aws", "nebius", "verda"):
         if not is_provider_configured(provider_name, config):
             continue
         any_queried = True
@@ -817,7 +862,7 @@ def templates_list():
                 for name in project_tpls:
                     console.print(f"  [bold cyan]{provider}:{name}[/bold cyan]")
 
-    for provider in ("aws", "nebius"):
+    for provider in ("aws", "nebius", "verda"):
         builtin_tpls = list_templates(provider)
         if builtin_tpls:
             console.print(f"[bold]Built-in ({provider})[/bold]")

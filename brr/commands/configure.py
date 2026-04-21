@@ -37,8 +37,12 @@ def _run_provider_wizard(provider):
     try:
         if provider == "aws":
             import boto3  # noqa: F401
-        else:
+        elif provider == "nebius":
             import nebius  # noqa: F401
+        elif provider == "verda":
+            import verda  # noqa: F401
+        else:
+            raise click.ClickException(f"Unknown provider: {provider}")
     except ImportError:
         raise click.ClickException(
             f"Missing dependencies for {provider}.\n"
@@ -49,10 +53,14 @@ def _run_provider_wizard(provider):
         from brr.aws.configure import configure_aws
 
         configure_aws()
-    else:
+    elif provider == "nebius":
         from brr.nebius.configure import configure_nebius
 
         configure_nebius()
+    else:
+        from brr.verda.configure import configure_verda
+
+        configure_verda()
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +80,7 @@ def configure(ctx):
       brr configure general    Instance settings (user, dotfiles, idle shutdown)
       brr configure aws        Shortcut for AWS cloud provider
       brr configure nebius     Shortcut for Nebius cloud provider
+      brr configure verda      Shortcut for Verda cloud provider
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -123,6 +132,7 @@ def cloud_cmd():
         choices=[
             Choice(value="aws", name="AWS"),
             Choice(value="nebius", name="Nebius"),
+            Choice(value="verda", name="Verda"),
         ],
     ).execute()
     console.print()
@@ -276,3 +286,9 @@ def aws_cmd():
 def nebius_cmd():
     """Shortcut: configure Nebius cloud provider."""
     _run_provider_wizard("nebius")
+
+
+@configure.command("verda")
+def verda_cmd():
+    """Shortcut: configure Verda cloud provider."""
+    _run_provider_wizard("verda")

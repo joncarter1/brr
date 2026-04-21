@@ -10,7 +10,7 @@ from brr.state import is_provider_configured
 from brr.templates import _template_dir
 
 
-PROVIDERS = ["aws", "nebius"]
+PROVIDERS = ["aws", "nebius", "verda"]
 
 # Maps project template name → built-in template to copy from, per provider.
 _TEMPLATE_MAP = {
@@ -21,6 +21,11 @@ _TEMPLATE_MAP = {
     "nebius": {
         "dev": "h100",  # single H100 GPU
         "cluster": "cpu-h100s",  # CPU head + H100 workers
+    },
+    "verda": {
+        "dev": "h100",  # single H100 GPU (1H100.80S.32V)
+        # No "cluster" entry — multi-node Verda requires a firewall
+        # allowlist mechanism that isn't wired up yet.
     },
 }
 
@@ -124,10 +129,12 @@ def init_cmd():
             dest.write_text(content)
 
         click.echo(f"\nInitialized {provider} project in .brr/{provider}/")
-        click.echo(f"  .brr/{provider}/dev.yaml      Single GPU ({repo_name}-dev)")
-        click.echo(
-            f"  .brr/{provider}/cluster.yaml  CPU head + GPU workers ({repo_name}-cluster)"
-        )
+        if "dev" in tpl_map:
+            click.echo(f"  .brr/{provider}/dev.yaml      Single GPU ({repo_name}-dev)")
+        if "cluster" in tpl_map:
+            click.echo(
+                f"  .brr/{provider}/cluster.yaml  CPU head + GPU workers ({repo_name}-cluster)"
+            )
 
     # Write project setup stub once (shared across providers)
     setup_sh = brr_dir / "setup.sh"
@@ -166,7 +173,8 @@ source "/opt/brr/venv/bin/activate"
     click.echo(f"\nTemplates are standard Ray YAML — edit them or add your own.")
 
     if is_uv_project:
-        sdks = sorted({("boto3" if p == "aws" else p) for p in providers})
+        _sdk_for = {"aws": "boto3", "nebius": "nebius", "verda": "verda"}
+        sdks = sorted({_sdk_for.get(p, p) for p in providers})
         click.echo(f"\nAdd cluster dependencies:")
         click.echo(f"  uv add 'ray[default]' {' '.join(sdks)}")
 

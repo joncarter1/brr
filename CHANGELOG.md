@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.14.2
+
+### Added
+
+- **Verda provider (beta).** New `verda` cloud provider alongside AWS and Nebius. Ships a Ray NodeProvider with stop-reuse caching, configure wizard, and built-in templates for `verda:h100` (1× H100 SXM5 in FIN-02), `verda:a100` (1× A100 80GB in FIN-01), and `verda:cpu` (single-node CPU dev box).
+- **Known limitation:** Verda has no cloud-level firewall. `setup.sh` locks down Verda instances with `ufw` (default deny inbound, SSH + loopback only). Multi-node Verda clusters are not yet supported — workers can't reach the head's Ray ports through the ufw allowlist. The `cpu` template is single-node only; a per-cluster worker-IP allowlist mechanism is planned.
+- Per-provider SSH user via `Provider.ssh_user()` — Verda uses `root`; AWS and Nebius still default to `ubuntu`.
+- Dedicated `brr/github.py` module with `ensure_github_key()`. A single `~/.brr/keys/github-*` key is now shared across all providers, decoupled from each provider's cluster SSH key.
+- Idle-shutdown daemon now also checks network throughput (rx+tx KB/s) alongside CPU and SSH activity.
+
+### Fixed
+
+- `initialization_commands` waits for `cloud-init` and uses `DPkg::Lock::Timeout=300` so fresh VMs no longer race `unattended-upgrades` on first boot.
+- `ssh.py:update_ssh_config` purges stale `known_hosts` entries for the target IP before writing a new block, so recycled cloud IPs don't trigger strict-checking failures on manual `ssh brr-*` connects.
+
+### Changed
+
+- GitHub SSH key is no longer tied to any provider's cluster key. Whichever provider you configure first generates the shared key; subsequent wizards reuse it instead of overwriting `GITHUB_SSH_KEY`. Pre-existing `brr-aws` / `brr-nebius` / `brr-verda` entries on GitHub remain until removed manually or by `brr nuke`.
+- `brr nuke` now deletes every GitHub SSH key entry whose title starts with `brr`, via the new shared helper.
+
 ## 0.14.1
 
 ### Fixed

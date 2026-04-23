@@ -253,30 +253,14 @@ def _resolve_cluster_name(tpl_name, project_root=None, region=None):
     return base
 
 
-def _pop_region_override(overrides):
-    """Extract and strip `region=X` from the overrides tuple.
+def _resolve_nebius_region(config, region):
+    """Validate the --region flag (or default) against configured regions.
 
-    Returns (region_or_None, remaining_overrides_tuple).
+    Returns (region, cluster_suffix_region). `cluster_suffix_region` is the
+    region to append to cluster names, or None when only one region is
+    configured (legacy / single-region users keep their existing cluster
+    names). Raises click.UsageError if the region is invalid.
     """
-    region = None
-    remaining = []
-    for o in overrides:
-        if o.startswith("region="):
-            region = o.split("=", 1)[1]
-        else:
-            remaining.append(o)
-    return region, tuple(remaining)
-
-
-def _resolve_nebius_region(config, overrides):
-    """Pick a Nebius region from overrides (region=X) or default.
-
-    Returns (region, remaining_overrides, cluster_suffix_region).
-    `cluster_suffix_region` is the region to append to cluster names, or None
-    when only one region is configured (legacy / single-region users keep their
-    existing cluster names). Raises click.UsageError if the region is invalid.
-    """
-    region, remaining = _pop_region_override(overrides)
     regions = nebius_regions(config)
     if not regions:
         raise click.UsageError(
@@ -290,7 +274,7 @@ def _resolve_nebius_region(config, overrides):
             f"Configured regions: {', '.join(regions)}"
         )
     suffix = region if len(regions) >= 2 else None
-    return region, remaining, suffix
+    return region, suffix
 
 
 def _find_nebius_cluster_variants(base_name):
@@ -425,7 +409,8 @@ def _sync_ssh_config(provider, cluster_name, display_name=None, region_suffix=""
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompts")
 @click.option("--dry-run", is_flag=True, help="Print rendered config without launching")
 @click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
-def up(template, overrides, yes, dry_run, no_project):
+@click.option("--region", default=None, help="Nebius region (when multiple configured)")
+def up(template, overrides, yes, dry_run, no_project, region):
     """Launch or update a Ray cluster.
 
     TEMPLATE is provider:name (aws:h100, nebius:cpu) or a .yaml file path.
@@ -439,7 +424,6 @@ def up(template, overrides, yes, dry_run, no_project):
       instance_type=p5.48xlarge    Override head node instance type
       max_workers=4                Set max workers
       spot=true                    Enable spot pricing
-      region=us-west-2             Override region
       az=us-east-1a                Override availability zone
       provider.region=us-west-2    Dot-notation for arbitrary YAML paths
     """
@@ -452,13 +436,11 @@ def up(template, overrides, yes, dry_run, no_project):
     check_provider_configured(provider, config)
 
     # Nebius: resolve region and overlay its per-region config before render/staging.
-    # `region=X` is stripped from overrides so it doesn't conflict with AWS's
-    # GLOBAL_ARGS["region"] → provider.region mapping.
     nebius_region = None
     nebius_cluster_suffix = None
     nebius_overlay = None
     if provider == "nebius":
-        nebius_region, overrides, nebius_cluster_suffix = _resolve_nebius_region(config, overrides)
+        nebius_region, nebius_cluster_suffix = _resolve_nebius_region(config, region)
         nebius_overlay = nebius_region_config(config, nebius_region)
         config = {**config, **nebius_overlay}
         console.print(f"Nebius region: [bold cyan]{nebius_region}[/bold cyan]")
@@ -661,7 +643,8 @@ def up(template, overrides, yes, dry_run, no_project):
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompts")
 @click.option("--delete", is_flag=True, help="Full cleanup: terminate all instances, remove local staging files")
 @click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
-def down(template, overrides, yes, delete, no_project):
+@click.option("--region", default=None, help="Nebius region (when multiple configured)")
+def down(template, overrides, yes, delete, no_project, region):
     """Stop a cluster (preserving instances for fast restart).
 
     Instances are stopped, not terminated — local disk data is preserved and
@@ -671,8 +654,8 @@ def down(template, overrides, yes, delete, no_project):
     With --delete, terminates all instances (data lost) and removes local
     staging files. Use `brr clean` to selectively terminate stopped instances.
 
-    For Nebius with multiple regions configured, pass `region=<name>` to target
-    a specific region's cluster (e.g. `brr down nebius:h100 region=eu-north1`).
+    For Nebius with multiple regions configured, pass --region=<name> to target
+    a specific region's cluster (e.g. `brr down nebius:h100 --region=eu-north1`).
     """
     import shutil
     from pathlib import Path
@@ -687,7 +670,7 @@ def down(template, overrides, yes, delete, no_project):
     if provider == "nebius":
         config = read_config()
         if nebius_regions(config):
-            _, _, nebius_suffix = _resolve_nebius_region(config, overrides)
+            _, nebius_suffix = _resolve_nebius_region(config, region)
     elif overrides:
         # Non-nebius: preserve old behavior (down ignored overrides before).
         console.print(f"[yellow]Ignoring overrides: {' '.join(overrides)}[/yellow]")
@@ -794,7 +777,8 @@ def attach(cluster, command, region, no_project):
 @click.argument("overrides", nargs=-1)
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt")
 @click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
-def clean(template, overrides, yes, no_project):
+@click.option("--region", default=None, help="Nebius region (when multiple configured)")
+def clean(template, overrides, yes, no_project, region):
     """Terminate stopped (cached) instances.
 
     Stopped instances are left behind by `brr down` (which stops rather than
@@ -803,7 +787,7 @@ def clean(template, overrides, yes, no_project):
     If TEMPLATE is given, clean only that cluster. Otherwise clean all stopped
     Ray instances.
 
-    For Nebius, pass `region=<name>` to target one region (when the cluster name
+    For Nebius, pass --region=<name> to target one region (when the cluster name
     should include the region suffix).
     """
     from brr.providers import get_provider
@@ -815,7 +799,7 @@ def clean(template, overrides, yes, no_project):
         project_root = _project_root_for(provider, tpl_name, no_project=no_project)
         nebius_suffix = None
         if provider == "nebius" and nebius_regions(config):
-            _, _, nebius_suffix = _resolve_nebius_region(config, overrides)
+            _, nebius_suffix = _resolve_nebius_region(config, region)
         cluster_name = _resolve_cluster_name(tpl_name, project_root, region=nebius_suffix)
         providers_to_clean = [(provider, cluster_name)]
     else:

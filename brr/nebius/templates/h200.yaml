@@ -1,0 +1,71 @@
+# brr Nebius template — single H200 GPU node
+# Based on Ray cluster YAML: https://docs.ray.io/en/latest/cluster/vms/references/ray-cluster-configuration.html
+#
+# {{VAR}} placeholders are filled from ~/.brr/config.env (set by `brr configure`).
+# brr auto-injects setup.sh, file_mounts, and project setup into the final YAML.
+# Add setup_commands to run your own commands after brr setup completes.
+#
+# Nebius node_config fields:
+#   platform_id  — compute platform (cpu-e2, gpu-h200-sxm)
+#   preset_id    — vCPU/RAM/GPU combo (e.g. 8vcpu-32gb, 1gpu-16vcpu-200gb)
+#   image_family — OS image (ubuntu22.04-driverless, ubuntu22.04-cuda12)
+#   resources    — required: tell Ray what the node has (CPU: N, GPU: N)
+
+_brr:
+  idle_shutdown_head: true
+
+max_workers: 0
+idle_timeout_minutes: 5
+
+provider:
+  type: external
+  module: brr.nebius.node_provider.NebiusNodeProvider
+  project_id: "{{NEBIUS_PROJECT_ID}}"
+  filesystem_id: "{{NEBIUS_FILESYSTEM_ID}}"
+  service_account_id: "{{NEBIUS_SERVICE_ACCOUNT_ID}}"
+  security_group_id: "{{NEBIUS_SECURITY_GROUP_ID}}"
+  # cache_stopped_nodes: true  # Stop (not delete) on scale-down for faster restart. Costs disk fees while stopped.
+
+auth:
+  ssh_user: ubuntu
+  ssh_private_key: {{NEBIUS_SSH_KEY}}
+
+head_node_type: ray.head.default
+
+available_node_types:
+  ray.head.default:
+    resources:
+      CPU: 16
+      GPU: 1
+    node_config:
+      platform_id: gpu-h200-sxm
+      preset_id: 1gpu-16vcpu-200gb
+      image_family: ubuntu22.04-cuda12
+      subnet_id: "{{NEBIUS_SUBNET_ID}}"
+      disk_size_gb: 1000
+      disk_type: network-ssd
+
+# Upload local files/dirs to all nodes (merged with brr's own file_mounts).
+# file_mounts:
+#   /remote/path: /local/path
+
+# Commands run on all nodes after brr's setup.sh (and project setup.sh if present).
+# setup_commands:
+#   - echo "extra setup here"
+
+# Commands run only on the head node after setup_commands.
+# head_setup_commands:
+#   - echo "head node ready"
+
+# Commands run only on worker nodes after setup_commands.
+# worker_setup_commands:
+#   - echo "worker ready"
+
+# WARNING: You probably don't need to modify the start_ray_commands below.
+head_start_ray_commands:
+    - source /opt/brr/venv/bin/activate && ray stop
+    - source /opt/brr/venv/bin/activate && ray start --head --port=6379 --object-manager-port=8076 --autoscaling-config=/tmp/ray_bootstrap_config.yaml --dashboard-host=0.0.0.0
+
+worker_start_ray_commands:
+    - source /opt/brr/venv/bin/activate && ray stop
+    - source /opt/brr/venv/bin/activate && ray start --address=$RAY_HEAD_IP:6379 --object-manager-port=8076

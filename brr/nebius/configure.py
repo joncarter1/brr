@@ -17,7 +17,11 @@ console = Console()
 
 NEBIUS_CREDS_PATH = Path.home() / ".nebius" / "credentials.json"
 
-_cached_sdk = None
+# Cached CLI access token (subprocess is slow ~100-300ms). We rebuild the SDK
+# per call because Nebius SDK instances bind their gRPC channel to the first
+# event loop they see; a cached SDK blows up on the next `asyncio.run()` with
+# "Event loop is closed".
+_cached_cli_token = None
 
 
 def _check_credentials():
@@ -39,35 +43,38 @@ def _check_credentials():
 
 
 def _nebius_sdk():
-    """Return a cached Nebius SDK for the configure wizard.
+    """Return a fresh Nebius SDK instance for the configure wizard.
+
+    Creates a new SDK per call — the SDK's gRPC channel is bound to the
+    active event loop, and configure runs each async block under its own
+    `asyncio.run()`, closing the loop between calls.
 
     Tries (in order):
     1. CLI access token via `nebius iam get-access-token` (personal credentials)
     2. CLI profile via Config() (needs federation-id in profile)
     3. credentials.json (service account key — limited IAM permissions)
     """
-    global _cached_sdk
-    if _cached_sdk is not None:
-        return _cached_sdk
-
+    global _cached_cli_token
     from nebius.sdk import SDK
 
-    # Try getting an access token from the CLI — works regardless of profile format
+    # Try a cached CLI token first (subprocess is slow)
+    if _cached_cli_token:
+        return SDK(credentials=_cached_cli_token)
+
     try:
         result = subprocess.run(
             ["nebius", "iam", "get-access-token"],
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0 and result.stdout.strip():
-            _cached_sdk = SDK(credentials=result.stdout.strip())
-            return _cached_sdk
+            _cached_cli_token = result.stdout.strip()
+            return SDK(credentials=_cached_cli_token)
     except Exception:
         pass
 
     try:
         from nebius.aio.cli_config import Config
-        _cached_sdk = SDK(config_reader=Config())
-        return _cached_sdk
+        return SDK(config_reader=Config())
     except Exception:
         pass
 
@@ -77,14 +84,12 @@ def _nebius_sdk():
             "  IAM operations (permissions, keys) may fail — SA credentials lack IAM admin access.\n"
             "  Install the Nebius CLI and authenticate for full access."
         )
-        _cached_sdk = SDK(credentials_file_name=str(NEBIUS_CREDS_PATH))
-        return _cached_sdk
+        return SDK(credentials_file_name=str(NEBIUS_CREDS_PATH))
 
     Console(stderr=True).print(
         "[yellow]Warning:[/yellow] No Nebius credentials found. API calls will likely fail."
     )
-    _cached_sdk = SDK()
-    return _cached_sdk
+    return SDK()
 
 
 def _get_or_create_security_group(project_id, subnet_id):
@@ -426,11 +431,16 @@ def _add_to_editors_group(project_id, sa_id):
         return False
 
 
-def _create_service_account_key(project_id, sa_id):
+def _create_service_account_key(project_id, sa_id, creds_path=None):
     """Generate an RSA key pair, upload the public key, and write credentials.json.
+
+    `creds_path` defaults to the global NEBIUS_CREDS_PATH. Multi-region callers
+    pass a per-region path (e.g. ~/.nebius/credentials-eu-north1.json).
 
     Returns True on success.
     """
+    if creds_path is None:
+        creds_path = NEBIUS_CREDS_PATH
     try:
         import asyncio
         from cryptography.hazmat.primitives import serialization
@@ -444,10 +454,10 @@ def _create_service_account_key(project_id, sa_id):
         )
 
         async def _create():
-            # Generate RSA key pair
+            # Generate RSA key pair — Nebius IAM requires 4096-bit modulus.
             private_key = rsa.generate_private_key(
                 public_exponent=65537,
-                key_size=2048,
+                key_size=4096,
             )
             private_pem = private_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
@@ -461,19 +471,20 @@ def _create_service_account_key(project_id, sa_id):
 
             # Upload public key
             sdk = _nebius_sdk()
-            client = AuthPublicKeyServiceClient(sdk)
-            op = await client.create(CreateAuthPublicKeyRequest(
-                metadata=ResourceMetadata(parent_id=project_id),
-                spec=AuthPublicKeySpec(
-                    account=Account(
-                        service_account=Account.ServiceAccount(id=sa_id),
+            async with sdk:
+                client = AuthPublicKeyServiceClient(sdk)
+                op = await client.create(CreateAuthPublicKeyRequest(
+                    metadata=ResourceMetadata(parent_id=project_id),
+                    spec=AuthPublicKeySpec(
+                        account=Account(
+                            service_account=Account.ServiceAccount(id=sa_id),
+                        ),
+                        data=public_pem,
+                        description="brr cluster autoscaling",
                     ),
-                    data=public_pem,
-                    description="brr cluster autoscaling",
-                ),
-            ))
-            await op.wait()
-            key_id = op.resource_id
+                ))
+                await op.wait()
+                key_id = op.resource_id
 
             # Write credentials.json
             creds = {
@@ -486,9 +497,15 @@ def _create_service_account_key(project_id, sa_id):
                     "sub": sa_id,
                 }
             }
-            NEBIUS_CREDS_PATH.parent.mkdir(parents=True, exist_ok=True)
-            NEBIUS_CREDS_PATH.write_text(json.dumps(creds, indent=2) + "\n")
-            os.chmod(NEBIUS_CREDS_PATH, 0o600)
+            creds_path.parent.mkdir(parents=True, exist_ok=True)
+            creds_path.write_text(json.dumps(creds, indent=2) + "\n")
+            os.chmod(creds_path, 0o600)
+            # Also mirror to the canonical path so local API queries and
+            # legacy single-region code paths continue to work.
+            if creds_path != NEBIUS_CREDS_PATH:
+                NEBIUS_CREDS_PATH.parent.mkdir(parents=True, exist_ok=True)
+                NEBIUS_CREDS_PATH.write_text(json.dumps(creds, indent=2) + "\n")
+                os.chmod(NEBIUS_CREDS_PATH, 0o600)
             return True
 
         return asyncio.run(_create())
@@ -515,24 +532,25 @@ def _create_s3_access_key(project_id, sa_id):
 
         async def _create():
             sdk = _nebius_sdk()
-            client = AccessKeyServiceClient(sdk)
-            op = await client.create(CreateAccessKeyRequest(
-                metadata=ResourceMetadata(parent_id=project_id),
-                spec=AccessKeySpec(
-                    account=Account(
-                        service_account=Account.ServiceAccount(id=sa_id),
+            async with sdk:
+                client = AccessKeyServiceClient(sdk)
+                op = await client.create(CreateAccessKeyRequest(
+                    metadata=ResourceMetadata(parent_id=project_id),
+                    spec=AccessKeySpec(
+                        account=Account(
+                            service_account=Account.ServiceAccount(id=sa_id),
+                        ),
+                        description="brr object storage",
                     ),
-                    description="brr object storage",
-                ),
-            ))
-            await op.wait()
-            key_id = op.resource_id
+                ))
+                await op.wait()
+                key_id = op.resource_id
 
-            # Fetch the AWS key ID and secret (only available once)
-            secret_resp = await client.get_secret(
-                GetAccessKeySecretRequest(id=key_id)
-            )
-            return (secret_resp.aws_access_key_id, secret_resp.secret)
+                # Fetch the AWS key ID and secret (only available once)
+                secret_resp = await client.get_secret(
+                    GetAccessKeySecretRequest(id=key_id)
+                )
+                return (secret_resp.aws_access_key_id, secret_resp.secret)
 
         return asyncio.run(_create())
     except Exception as e:
@@ -573,17 +591,20 @@ def _get_or_create_ssh_key():
 
 
 
-def configure_nebius():
-    """Interactive Nebius configuration wizard."""
-    ensure_state_dirs()
-    existing = read_config()
+def _region_creds_path(region):
+    """Per-region credentials file path (e.g. ~/.nebius/credentials-eu-north1.json)."""
+    return Path.home() / ".nebius" / f"credentials-{region}.json"
 
-    console.print(Panel("Nebius configuration", title="brr configure", border_style="cyan"))
 
-    # --- Credentials ---
-    if not _check_credentials():
-        raise click.Abort()
-    console.print()
+def _configure_region(region, existing_region_values):
+    """Run the per-region setup flow (project → subnet → SG → FS → SA → S3).
+
+    `existing_region_values` is a dict of previously-stored values for this region
+    (already in their bare NEBIUS_* form) used as defaults. Returns a dict of
+    updated values keyed by bare name (NEBIUS_PROJECT_ID etc.) — caller remaps
+    them to per-region keys.
+    """
+    existing = existing_region_values
 
     # --- Project ID ---
     project_id = click.prompt(
@@ -601,7 +622,6 @@ def configure_nebius():
             if zone:
                 label += f" — {zone}"
             subnet_choices.append(Choice(value=sid, name=label))
-
         subnet_id = inquirer.select(
             message="Select subnet",
             choices=subnet_choices,
@@ -621,16 +641,6 @@ def configure_nebius():
         console.print(f"Security group: [green]{security_group_id}[/green]")
     else:
         console.print("[yellow]No security group configured — instances will have no firewall rules[/yellow]")
-
-    # --- SSH key ---
-    ssh_key = existing.get("NEBIUS_SSH_KEY", "")
-    if ssh_key and Path(ssh_key).exists():
-        console.print(f"\nUsing existing SSH key: [green]{ssh_key}[/green]")
-        if click.confirm("Generate a new key instead?", default=False):
-            ssh_key = _get_or_create_ssh_key()
-    else:
-        console.print()
-        ssh_key = _get_or_create_ssh_key()
 
     # --- Shared filesystem ---
     console.print()
@@ -662,7 +672,6 @@ def configure_nebius():
                 console.print(f"Created filesystem: [green]{filesystem_id}[/green]")
         else:
             filesystem_id = choice
-            # Offer to resize the selected filesystem
             current_size = next(
                 (s for fid, _, s in (filesystems or []) if fid == choice), None
             )
@@ -705,7 +714,7 @@ def configure_nebius():
 
     created = False
     if choice == "_create":
-        sa_name = click.prompt("Service account name", default="brr-cluster")
+        sa_name = click.prompt("Service account name", default=f"brr-cluster-{region}")
         with console.status("[bold green]Creating service account..."):
             service_account_id = _create_service_account(project_id, sa_name) or ""
         if service_account_id:
@@ -715,26 +724,23 @@ def configure_nebius():
         service_account_id = choice
 
     if service_account_id:
-        # Permissions (editors group + scoped admin access permit)
         with console.status("[bold green]Setting up permissions..."):
             if _add_to_editors_group(project_id, service_account_id):
                 console.print("Added to [green]editors[/green] group with SA access permit")
 
-        # Credentials key for node provider (autoscaling)
-        needs_creds = created or not NEBIUS_CREDS_PATH.exists()
-        if not needs_creds and NEBIUS_CREDS_PATH.exists():
+        creds_path = _region_creds_path(region)
+        needs_creds = created or not creds_path.exists()
+        if not needs_creds and creds_path.exists():
             try:
-                creds = json.loads(NEBIUS_CREDS_PATH.read_text())
+                creds = json.loads(creds_path.read_text())
                 needs_creds = creds.get("subject-credentials", {}).get("iss", "") != service_account_id
             except (json.JSONDecodeError, KeyError):
                 needs_creds = True
         if needs_creds:
             with console.status("[bold green]Generating credentials key..."):
-                if _create_service_account_key(project_id, service_account_id):
-                    console.print(f"Wrote credentials: [green]{NEBIUS_CREDS_PATH}[/green]")
+                if _create_service_account_key(project_id, service_account_id, creds_path=creds_path):
+                    console.print(f"Wrote credentials: [green]{creds_path}[/green]")
 
-        # S3 access key for Object Storage
-        # Recreate if missing or if SA changed (needs_creds implies SA mismatch)
         if not s3_key_id or needs_creds:
             with console.status("[bold green]Creating S3 access key..."):
                 result = _create_s3_access_key(project_id, service_account_id)
@@ -742,33 +748,167 @@ def configure_nebius():
                 s3_key_id, s3_secret_key = result
                 console.print(f"S3 access key: [green]{s3_key_id}[/green]")
 
-    # --- GitHub SSH access ---
-    console.print()
-    github_ssh_key = existing.get("GITHUB_SSH_KEY", "")
-    if click.confirm(
-        "Set up GitHub SSH access for clusters?",
-        default=bool(github_ssh_key),
-    ):
-        from brr.github import ensure_github_key
-        github_ssh_key = ensure_github_key(existing)
-    else:
-        github_ssh_key = ""
-
-    # --- Write config (merge with existing) ---
-    updates = {
+    return {
         "NEBIUS_PROJECT_ID": project_id,
         "NEBIUS_SUBNET_ID": subnet_id,
-        "NEBIUS_SSH_KEY": ssh_key,
         "NEBIUS_FILESYSTEM_ID": filesystem_id,
         "NEBIUS_SECURITY_GROUP_ID": security_group_id,
         "NEBIUS_SERVICE_ACCOUNT_ID": service_account_id,
         "NEBIUS_S3_ACCESS_KEY_ID": s3_key_id,
         "NEBIUS_S3_SECRET_KEY": s3_secret_key,
-        "GITHUB_SSH_KEY": github_ssh_key,
     }
 
+
+def _region_values_from_config(config, region):
+    """Extract a region's bare-name values from the merged config."""
+    from brr.state import nebius_region_config
+    return nebius_region_config(config, region)
+
+
+def _apply_region_values(config, region, values):
+    """Write per-region values back into config using mangled key names.
+
+    For region 'default' (legacy), writes into bare NEBIUS_* keys. Otherwise
+    uses NEBIUS_{SLUG}_{SUFFIX}.
+    """
+    from brr.state import nebius_region_key
+    is_legacy = region == "default" and not config.get("NEBIUS_REGIONS")
+    for bare, val in values.items():
+        if is_legacy:
+            config[bare] = val
+        else:
+            suffix = bare[len("NEBIUS_"):]  # e.g. PROJECT_ID
+            config[nebius_region_key(region, suffix)] = val
+
+
+def _remove_region_values(config, region):
+    """Remove all keys associated with a region."""
+    from brr.state import nebius_region_key, NEBIUS_REGION_KEYS
+    for suffix in NEBIUS_REGION_KEYS:
+        config.pop(nebius_region_key(region, suffix), None)
+
+
+def configure_nebius():
+    """Interactive Nebius configuration wizard — multi-region aware."""
+    from brr.state import nebius_regions
+
+    ensure_state_dirs()
+    existing = read_config()
+
+    console.print(Panel("Nebius configuration", title="brr configure", border_style="cyan"))
+
+    # --- Credentials ---
+    if not _check_credentials():
+        raise click.Abort()
+    console.print()
+
     merged = dict(existing)
-    merged.update(updates)
+
+    # Detect legacy (flat) config and offer to migrate to a named region.
+    legacy_flat = bool(merged.get("NEBIUS_PROJECT_ID")) and not merged.get("NEBIUS_REGIONS")
+    if legacy_flat:
+        console.print("[yellow]Detected existing single-region Nebius config.[/yellow]")
+        rename = click.prompt(
+            "Give it a region name (e.g. eu-north1), or leave blank to keep 'default'",
+            default="",
+        ).strip()
+        if rename:
+            # Migrate flat keys → per-region keys under the new name
+            values = _region_values_from_config(merged, "default")
+            # Strip the bare/flat keys
+            for bare in list(values.keys()):
+                merged.pop(bare, None)
+            _apply_region_values(merged, rename, values)
+            merged["NEBIUS_REGIONS"] = rename
+            # Move credentials file
+            old_creds = NEBIUS_CREDS_PATH
+            new_creds = _region_creds_path(rename)
+            if old_creds.exists() and not new_creds.exists():
+                new_creds.parent.mkdir(parents=True, exist_ok=True)
+                new_creds.write_text(old_creds.read_text())
+                os.chmod(new_creds, 0o600)
+                console.print(f"Copied credentials to [green]{new_creds}[/green]")
+            console.print(f"Migrated single-region config → region '[green]{rename}[/green]'")
+        else:
+            merged["NEBIUS_REGIONS"] = "default"
+            console.print("Keeping region name '[green]default[/green]' (run configure again to rename)")
+
+    # --- Region management loop ---
+    while True:
+        regions = nebius_regions(merged)
+        console.print()
+        console.print(f"[bold]Configured regions:[/bold] {', '.join(regions) if regions else '(none)'}")
+        menu_choices = [Choice(value="add", name="Add a region")]
+        for r in regions:
+            menu_choices.append(Choice(value=f"edit:{r}", name=f"Edit region — {r}"))
+        if len(regions) > 1:
+            # Only allow removing when more than one exists; avoid leaving Nebius unconfigured.
+            for r in regions:
+                menu_choices.append(Choice(value=f"remove:{r}", name=f"Remove region — {r}"))
+        menu_choices.append(Choice(value="done", name="Done"))
+
+        action = inquirer.select(
+            message="Region management",
+            choices=menu_choices,
+            default="done" if regions else "add",
+        ).execute()
+
+        if action == "done":
+            if not regions:
+                console.print("[yellow]At least one region is required. Add a region or abort with Ctrl+C.[/yellow]")
+                continue
+            break
+        if action == "add":
+            name = click.prompt("Region name (e.g. eu-north1)").strip()
+            if not name:
+                continue
+            if name in regions:
+                console.print(f"[yellow]Region '{name}' already exists; pick Edit instead.[/yellow]")
+                continue
+            console.print(f"\n[bold]Configuring region: {name}[/bold]")
+            values = _configure_region(name, {})
+            _apply_region_values(merged, name, values)
+            regions = regions + [name]
+            merged["NEBIUS_REGIONS"] = ",".join(regions)
+        elif action.startswith("edit:"):
+            name = action.split(":", 1)[1]
+            console.print(f"\n[bold]Editing region: {name}[/bold]")
+            current = _region_values_from_config(merged, name)
+            values = _configure_region(name, current)
+            _apply_region_values(merged, name, values)
+        elif action.startswith("remove:"):
+            name = action.split(":", 1)[1]
+            if not click.confirm(f"Remove region '{name}' from config (cloud resources are left untouched)?"):
+                continue
+            _remove_region_values(merged, name)
+            remaining = [r for r in regions if r != name]
+            merged["NEBIUS_REGIONS"] = ",".join(remaining)
+            console.print(f"Removed region '[red]{name}[/red]' from config")
+
+    # --- SSH key (global, shared across regions) ---
+    console.print()
+    ssh_key = merged.get("NEBIUS_SSH_KEY", "")
+    if ssh_key and Path(ssh_key).exists():
+        console.print(f"Using existing SSH key: [green]{ssh_key}[/green]")
+        if click.confirm("Generate a new key instead?", default=False):
+            ssh_key = _get_or_create_ssh_key()
+    else:
+        ssh_key = _get_or_create_ssh_key()
+    merged["NEBIUS_SSH_KEY"] = ssh_key
+
+    # --- GitHub SSH access (global) ---
+    console.print()
+    github_ssh_key = merged.get("GITHUB_SSH_KEY", "")
+    if click.confirm(
+        "Set up GitHub SSH access for clusters?",
+        default=bool(github_ssh_key),
+    ):
+        from brr.github import ensure_github_key
+        github_ssh_key = ensure_github_key(merged)
+    else:
+        github_ssh_key = ""
+    merged["GITHUB_SSH_KEY"] = github_ssh_key
+
     write_config(merged)
     console.print(f"\nWrote [green]{CONFIG_PATH}[/green]")
 
@@ -776,4 +916,8 @@ def configure_nebius():
     console.print("[bold green]Done![/bold green] Next steps:")
     console.print("  brr configure tools                         # select AI coding tools")
     console.print("  brr configure general                       # instance settings")
-    console.print("  brr up nebius:h100                          # launch H100 GPU cluster")
+    first_region = nebius_regions(merged)[0] if nebius_regions(merged) else ""
+    if len(nebius_regions(merged)) >= 2:
+        console.print(f"  brr up nebius:h100 region={first_region}   # launch H100 GPU cluster in {first_region}")
+    else:
+        console.print("  brr up nebius:h100                          # launch H100 GPU cluster")

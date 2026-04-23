@@ -14,6 +14,7 @@ from rich.table import Table
 from brr.state import (
     read_config, read_merged_config, find_project_root, find_project_providers,
     cluster_ssh_alias, check_provider_configured, is_provider_configured,
+    nebius_regions, nebius_default_region, nebius_region_config,
 )
 from brr.templates import (
     resolve_template,
@@ -222,26 +223,137 @@ def _run_ray(args, provider="aws"):
         sys.exit(result.returncode)
 
 
-def _resolve_cluster_name(tpl_name, project_root=None):
+def _resolve_cluster_name(tpl_name, project_root=None, region=None):
     """Resolve template name to cluster_name.
 
     Inside a project: derives {repo_name}-{tpl_name}.
     Outside a project: returns tpl_name.
+    If region is provided, appends -{region} to disambiguate multi-region clusters.
     """
-    if project_root and "/" not in tpl_name and not tpl_name.endswith(".yaml"):
-        return f"{Path(project_root).name}-{tpl_name}"
-    return tpl_name
+    if "/" in tpl_name or tpl_name.endswith(".yaml"):
+        return tpl_name
+    base = f"{Path(project_root).name}-{tpl_name}" if project_root else tpl_name
+    if region:
+        base = f"{base}-{region}"
+    return base
+
+
+def _pop_region_override(overrides):
+    """Extract and strip `region=X` from the overrides tuple.
+
+    Returns (region_or_None, remaining_overrides_tuple).
+    """
+    region = None
+    remaining = []
+    for o in overrides:
+        if o.startswith("region="):
+            region = o.split("=", 1)[1]
+        else:
+            remaining.append(o)
+    return region, tuple(remaining)
+
+
+def _resolve_nebius_region(config, overrides):
+    """Pick a Nebius region from overrides (region=X) or default.
+
+    Returns (region, remaining_overrides, cluster_suffix_region).
+    `cluster_suffix_region` is the region to append to cluster names, or None
+    when only one region is configured (legacy / single-region users keep their
+    existing cluster names). Raises click.UsageError if the region is invalid.
+    """
+    region, remaining = _pop_region_override(overrides)
+    regions = nebius_regions(config)
+    if not regions:
+        raise click.UsageError(
+            "Nebius not configured. Run `brr configure nebius`."
+        )
+    if region is None:
+        region = nebius_default_region(config)
+    if region not in regions:
+        raise click.UsageError(
+            f"Nebius region '{region}' not configured. "
+            f"Configured regions: {', '.join(regions)}"
+        )
+    suffix = region if len(regions) >= 2 else None
+    return region, remaining, suffix
+
+
+def _find_nebius_cluster_variants(base_name):
+    """Scan staging dirs for clusters matching {base_name} or {base_name}-{region}.
+
+    Returns list of (cluster_name, region_or_None) tuples. Used for auto-resolving
+    `brr attach nebius:h100` when region isn't specified but multiple regional
+    clusters share the same base name.
+    """
+    from brr.state import STATE_DIR
+    nebius_dir = STATE_DIR / "staging" / "nebius"
+    if not nebius_dir.is_dir():
+        return []
+    variants = []
+    for entry in nebius_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if name == base_name:
+            variants.append((name, None))
+        elif name.startswith(f"{base_name}-"):
+            region = name[len(base_name) + 1:]
+            variants.append((name, region))
+    return variants
+
+
+def _resolve_nebius_cluster_name_for_attach(tpl_name, project_root, config, region_opt):
+    """For attach/vscode: resolve cluster name given optional region.
+
+    1. If region_opt is given, append directly.
+    2. Else if user typed a name that already has a region suffix (i.e. it matches
+       a staging dir exactly), use it.
+    3. Else scan for variants of the base name — use it if exactly one exists;
+       list options and error if multiple.
+    """
+    base = _resolve_cluster_name(tpl_name, project_root)
+    # Case 1: explicit region
+    if region_opt:
+        suffix = region_opt if len(nebius_regions(config)) >= 2 else None
+        return _resolve_cluster_name(tpl_name, project_root, region=suffix)
+    # Case 2: the name already resolves to a staging dir (legacy or fully-qualified)
+    from brr.state import staging_dir_for
+    if staging_dir_for(base, "nebius").exists():
+        return base
+    # Case 3: scan for variants
+    variants = _find_nebius_cluster_variants(base)
+    if len(variants) == 1:
+        return variants[0][0]
+    if len(variants) > 1:
+        names = ", ".join(v[0] for v in variants)
+        raise click.UsageError(
+            f"Multiple clusters match '{base}': {names}\n"
+            f"  Specify the region, e.g. `brr attach nebius:{tpl_name} region=<name>`"
+        )
+    # No variants found — return the base anyway (will fail downstream with a clear error)
+    return base
 
 
 def _project_cluster_map(project_root):
-    """Return mapping of cluster_name → template_stem for project templates."""
+    """Return mapping of cluster_name → template_stem for project templates.
+
+    For Nebius templates, also enumerates per-region variants
+    ({repo}-{tpl}-{region}) when 2+ regions are configured, since `brr up`
+    auto-suffixes multi-region cluster names.
+    """
     mapping = {}
     repo_name = Path(project_root).name
     brr_dir = Path(project_root) / ".brr"
+    config = read_config()
+    nebius_region_list = nebius_regions(config) if len(nebius_regions(config)) >= 2 else []
     for yaml_file in brr_dir.glob("*/*.yaml"):
         tpl_stem = yaml_file.stem
-        cluster_name = f"{repo_name}-{tpl_stem}"
-        mapping[cluster_name] = tpl_stem
+        provider = yaml_file.parent.name
+        base = f"{repo_name}-{tpl_stem}"
+        mapping[base] = tpl_stem
+        if provider == "nebius":
+            for region in nebius_region_list:
+                mapping[f"{base}-{region}"] = tpl_stem
     return mapping
 
 
@@ -323,6 +435,18 @@ def up(template, overrides, yes, dry_run, no_project):
 
     config, _ = read_merged_config(project_root)
     check_provider_configured(provider, config)
+
+    # Nebius: resolve region and overlay its per-region config before render/staging.
+    # `region=X` is stripped from overrides so it doesn't conflict with AWS's
+    # GLOBAL_ARGS["region"] → provider.region mapping.
+    nebius_region = None
+    nebius_cluster_suffix = None
+    nebius_overlay = None
+    if provider == "nebius":
+        nebius_region, overrides, nebius_cluster_suffix = _resolve_nebius_region(config, overrides)
+        nebius_overlay = nebius_region_config(config, nebius_region)
+        config = {**config, **nebius_overlay}
+        console.print(f"Nebius region: [bold cyan]{nebius_region}[/bold cyan]")
 
     try:
         tpl_content, tpl_name = resolve_template(tpl_name, provider, project_root=project_root)
@@ -427,7 +551,7 @@ def up(template, overrides, yes, dry_run, no_project):
             "You can safely remove it from your template.[/yellow]"
         )
 
-    cluster_name = _resolve_cluster_name(tpl_name, project_root)
+    cluster_name = _resolve_cluster_name(tpl_name, project_root, region=nebius_cluster_suffix)
     rendered["cluster_name"] = cluster_name
 
     # First deploy: git clone the project. Re-deploy: infrastructure only.
@@ -443,8 +567,26 @@ def up(template, overrides, yes, dry_run, no_project):
         if git_info is not None:
             _validate_git_for_sync(project_root, git_info, config)
 
-    staging = prepare_staging(cluster_name, provider, project_root=project_root)
+    staging = prepare_staging(
+        cluster_name, provider, project_root=project_root,
+        config_overlay=nebius_overlay,
+    )
     inject_brr_infra(rendered, staging, git_info=git_info, brr_meta=template_aliases)
+
+    # Persist the Nebius region alongside the staged YAML so later commands
+    # (down, attach, nuke, list) can route to the correct region without
+    # scanning all configured regions.
+    if provider == "nebius" and nebius_region:
+        import json
+        meta_path = staging / "brr_meta.json"
+        meta = {}
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                meta = {}
+        meta["region"] = nebius_region
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n")
 
     if dry_run:
         console.print()
@@ -486,10 +628,11 @@ def up(template, overrides, yes, dry_run, no_project):
 
 @click.command()
 @click.argument("template")
+@click.argument("overrides", nargs=-1)
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompts")
 @click.option("--delete", is_flag=True, help="Full cleanup: terminate all instances, remove local staging files")
 @click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
-def down(template, yes, delete, no_project):
+def down(template, overrides, yes, delete, no_project):
     """Stop a cluster (preserving instances for fast restart).
 
     Instances are stopped, not terminated — local disk data is preserved and
@@ -498,6 +641,9 @@ def down(template, yes, delete, no_project):
 
     With --delete, terminates all instances (data lost) and removes local
     staging files. Use `brr clean` to selectively terminate stopped instances.
+
+    For Nebius with multiple regions configured, pass `region=<name>` to target
+    a specific region's cluster (e.g. `brr down nebius:h100 region=eu-north1`).
     """
     import shutil
     from pathlib import Path
@@ -507,7 +653,17 @@ def down(template, yes, delete, no_project):
 
     provider, tpl_name = _resolve_provider(template)
     project_root = _project_root_for(provider, tpl_name, no_project=no_project)
-    cluster_name = _resolve_cluster_name(tpl_name, project_root)
+
+    nebius_suffix = None
+    if provider == "nebius":
+        config = read_config()
+        if nebius_regions(config):
+            _, _, nebius_suffix = _resolve_nebius_region(config, overrides)
+    elif overrides:
+        # Non-nebius: preserve old behavior (down ignored overrides before).
+        console.print(f"[yellow]Ignoring overrides: {' '.join(overrides)}[/yellow]")
+
+    cluster_name = _resolve_cluster_name(tpl_name, project_root, region=nebius_suffix)
     ssh_alias = cluster_ssh_alias(provider, cluster_name)
 
     if "/" in tpl_name or tpl_name.endswith(".yaml"):
@@ -559,18 +715,27 @@ def down(template, yes, delete, no_project):
 @click.command()
 @click.argument("cluster")
 @click.argument("command", nargs=-1)
+@click.option("--region", default=None, help="Nebius region (when multiple configured)")
 @click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
-def attach(cluster, command, no_project):
+def attach(cluster, command, region, no_project):
     """SSH into the head node of a Ray cluster.
 
     CLUSTER is provider:name (e.g. aws:h100, nebius:cpu).
     Uses the SSH config entry written by `brr up`.
 
     Optionally pass a COMMAND to run on the node (e.g. brr attach aws:h100 claude).
+
+    For Nebius with multiple regions, pass --region=<name> or type the full
+    suffixed cluster name (e.g. `brr attach nebius:h100-eu-north1`). When
+    unambiguous, auto-resolves from staged clusters.
     """
     provider, name = _resolve_provider(cluster)
     project_root = _project_root_for(provider, name, no_project=no_project)
-    cluster_name = _resolve_cluster_name(name, project_root)
+    if provider == "nebius":
+        config = read_config()
+        cluster_name = _resolve_nebius_cluster_name_for_attach(name, project_root, config, region)
+    else:
+        cluster_name = _resolve_cluster_name(name, project_root)
     host = cluster_ssh_alias(provider, cluster_name)
 
     # If launched from a project, cd into ~/code/{repo} on the remote
@@ -597,9 +762,10 @@ def attach(cluster, command, no_project):
 
 @click.command()
 @click.argument("template", required=False)
+@click.argument("overrides", nargs=-1)
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt")
 @click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
-def clean(template, yes, no_project):
+def clean(template, overrides, yes, no_project):
     """Terminate stopped (cached) instances.
 
     Stopped instances are left behind by `brr down` (which stops rather than
@@ -607,6 +773,9 @@ def clean(template, yes, no_project):
 
     If TEMPLATE is given, clean only that cluster. Otherwise clean all stopped
     Ray instances.
+
+    For Nebius, pass `region=<name>` to target one region (when the cluster name
+    should include the region suffix).
     """
     from brr.providers import get_provider
 
@@ -615,7 +784,10 @@ def clean(template, yes, no_project):
     if template:
         provider, tpl_name = _resolve_provider(template)
         project_root = _project_root_for(provider, tpl_name, no_project=no_project)
-        cluster_name = _resolve_cluster_name(tpl_name, project_root)
+        nebius_suffix = None
+        if provider == "nebius" and nebius_regions(config):
+            _, _, nebius_suffix = _resolve_nebius_region(config, overrides)
+        cluster_name = _resolve_cluster_name(tpl_name, project_root, region=nebius_suffix)
         providers_to_clean = [(provider, cluster_name)]
     else:
         # Clean all configured providers
@@ -665,12 +837,16 @@ def clean(template, yes, no_project):
 
 @click.command()
 @click.argument("cluster")
+@click.option("--region", default=None, help="Nebius region (when multiple configured)")
 @click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
-def vscode(cluster, no_project):
+def vscode(cluster, region, no_project):
     """Open VS Code on a running cluster via Remote SSH.
 
     Looks up the head node IP for CLUSTER (provider:name, e.g. aws:h100),
     updates the SSH config entry, and launches VS Code.
+
+    For Nebius with multiple regions, pass --region=<name> or type the full
+    suffixed name (e.g. `brr vscode nebius:h100-eu-north1`).
     """
     from brr.providers import get_provider
     from brr.ssh import update_ssh_config
@@ -680,7 +856,10 @@ def vscode(cluster, no_project):
     provider, name = _resolve_provider(cluster)
     check_provider_configured(provider, config)
     project_root = _project_root_for(provider, name, no_project=no_project)
-    cluster_name = _resolve_cluster_name(name, project_root)
+    if provider == "nebius":
+        cluster_name = _resolve_nebius_cluster_name_for_attach(name, project_root, config, region)
+    else:
+        cluster_name = _resolve_cluster_name(name, project_root)
 
     prov = get_provider(provider)
 
@@ -786,6 +965,7 @@ def list_cmd(show_all):
         return
 
     has_multiple_providers = len({p for p, _ in all_clusters}) > 1
+    has_regions = any(c.get("region") for _, c in all_clusters)
 
     if project_root and not show_all:
         console.print(f"Project: [bold]{project_root.name}[/bold]")
@@ -796,6 +976,8 @@ def list_cmd(show_all):
     if show_all:
         table.add_column("Project")
     table.add_column("Cluster", style="cyan")
+    if has_regions:
+        table.add_column("Region", style="magenta")
     table.add_column("State")
     table.add_column("Head IP", style="green")
     table.add_column("Instance Type")
@@ -829,8 +1011,10 @@ def list_cmd(show_all):
             row.append(provider)
         if show_all:
             row.append(project_paths.get(c["cluster_name"], ""))
+        row.append(display_name)
+        if has_regions:
+            row.append(c.get("region", "-"))
         row.extend([
-            display_name,
             state_str,
             c["head_ip"],
             c["instance_type"],

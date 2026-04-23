@@ -371,7 +371,7 @@ def _inject_config_source(script_content, preamble):
     return "\n".join(lines)
 
 
-def prepare_staging(name, provider="aws", project_root=None):
+def prepare_staging(name, provider="aws", project_root=None, config_overlay=None):
     """Create staging directory with support files for a cluster.
 
     Two-layer setup:
@@ -379,6 +379,11 @@ def prepare_staging(name, provider="aws", project_root=None):
       2. project-setup.sh (project) — from .brr/setup.sh if it exists
 
     Also writes idle-shutdown.sh and config.env.
+
+    `config_overlay` is merged on top of the user's config.env before writing
+    the staged config.env — used by multi-region Nebius to inject the selected
+    region's values as bare NEBIUS_* keys so setup.sh sees them.
+
     Returns the staging directory path.
     """
     staging = staging_dir_for(name, provider)
@@ -432,6 +437,8 @@ def prepare_staging(name, provider="aws", project_root=None):
     # PROVIDER for setup.sh to branch on.
     if CONFIG_PATH.exists():
         merged = {**CONFIG_DEFAULTS, **read_config()}
+        if config_overlay:
+            merged.update(config_overlay)
         merged["PROVIDER"] = provider
         lines = [f'{k}="{v}"' for k, v in merged.items()]
         (staging / "config.env").write_text("\n".join(lines) + "\n")
@@ -446,10 +453,18 @@ def prepare_staging(name, provider="aws", project_root=None):
         src = Path(__file__).parent / "nebius" / "node_provider.py"
         (provider_lib / "node_provider.py").write_text(src.read_text())
 
-        # Copy credentials so setup.sh can place them on the head
-        creds = Path.home() / ".nebius" / "credentials.json"
-        if creds.exists():
-            (staging / "nebius_credentials.json").write_text(creds.read_text())
+        # Copy credentials so setup.sh can place them on the head. Prefer the
+        # per-region credentials file if the overlay picked a region; fall back
+        # to the global credentials.json for legacy / single-region users.
+        region = (config_overlay or {}).get("NEBIUS_REGION", "")
+        creds_candidates = []
+        if region:
+            creds_candidates.append(Path.home() / ".nebius" / f"credentials-{region}.json")
+        creds_candidates.append(Path.home() / ".nebius" / "credentials.json")
+        for creds in creds_candidates:
+            if creds.exists():
+                (staging / "nebius_credentials.json").write_text(creds.read_text())
+                break
 
     # For Verda: ship the node provider + tag store + the `brr.verda.nodes`
     # credentials helper they both rely on.

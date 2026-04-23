@@ -166,20 +166,115 @@ def read_merged_config(project_root=None):
     return config, project_root
 
 
+# --- Nebius region helpers ---
+
+# Per-region keys (mangled form: NEBIUS_{REGION_SLUG}_{SUFFIX}).
+# SSH key is global (shared file path across regions).
+NEBIUS_REGION_KEYS = (
+    "PROJECT_ID",
+    "SUBNET_ID",
+    "FILESYSTEM_ID",
+    "SECURITY_GROUP_ID",
+    "SERVICE_ACCOUNT_ID",
+    "S3_ACCESS_KEY_ID",
+    "S3_SECRET_KEY",
+)
+
+NEBIUS_REQUIRED_SUFFIXES = ("PROJECT_ID", "SUBNET_ID", "SECURITY_GROUP_ID")
+
+
+def _region_slug(region):
+    """Normalize a region name to its config-key form: upper + '-'→'_'.
+
+    'eu-north1' → 'EU_NORTH1'
+    """
+    return region.upper().replace("-", "_")
+
+
+def _is_legacy_nebius_config(config):
+    """Return True if config has flat NEBIUS_PROJECT_ID but no NEBIUS_REGIONS."""
+    return bool(config.get("NEBIUS_PROJECT_ID")) and not config.get("NEBIUS_REGIONS")
+
+
+def nebius_regions(config):
+    """Return configured Nebius regions (ordered list).
+
+    Synthesizes ['default'] from legacy flat config if NEBIUS_REGIONS is absent
+    but NEBIUS_PROJECT_ID exists. Returns [] if Nebius is not configured at all.
+    """
+    raw = config.get("NEBIUS_REGIONS", "").strip()
+    if raw:
+        return [r.strip() for r in raw.split(",") if r.strip()]
+    if _is_legacy_nebius_config(config):
+        return ["default"]
+    return []
+
+
+def nebius_default_region(config):
+    """Return the default Nebius region (first in NEBIUS_REGIONS)."""
+    regions = nebius_regions(config)
+    return regions[0] if regions else ""
+
+
+def nebius_region_config(config, region):
+    """Flatten per-region keys into bare NEBIUS_* keys for the given region.
+
+    Returns a dict overlay of {'NEBIUS_PROJECT_ID': ..., 'NEBIUS_SUBNET_ID': ...,
+    'NEBIUS_REGION': region, ...} ready to merge on top of the base config.
+
+    For legacy flat config (region='default'), pulls bare NEBIUS_* keys directly
+    and omits NEBIUS_REGION so setup.sh's existing fallback (:-eu-north1) kicks in.
+    """
+    is_legacy = _is_legacy_nebius_config(config) and region == "default"
+    overlay = {} if is_legacy else {"NEBIUS_REGION": region}
+    slug = _region_slug(region)
+    for suffix in NEBIUS_REGION_KEYS:
+        bare = f"NEBIUS_{suffix}"
+        if is_legacy:
+            overlay[bare] = config.get(bare, "")
+        else:
+            overlay[bare] = config.get(f"NEBIUS_{slug}_{suffix}", "")
+    return overlay
+
+
+def nebius_region_key(region, suffix):
+    """Return the config key for a per-region value, e.g. NEBIUS_EU_NORTH1_PROJECT_ID."""
+    return f"NEBIUS_{_region_slug(region)}_{suffix}"
+
+
 # --- provider configuration checks ---
 
 
 _REQUIRED_KEYS = {
     "aws": ["AWS_REGION", "AWS_KEY_NAME", "AWS_SECURITY_GROUP"],
-    "nebius": ["NEBIUS_PROJECT_ID", "NEBIUS_SUBNET_ID", "NEBIUS_SSH_KEY", "NEBIUS_SECURITY_GROUP_ID"],
     "verda": ["VERDA_SSH_KEY", "VERDA_SSH_KEY_ID"],
 }
+
+
+def _is_nebius_configured(config):
+    """Nebius is configured if:
+    - legacy flat config has all required bare keys, OR
+    - NEBIUS_REGIONS is set and each listed region has its required per-region keys.
+    NEBIUS_SSH_KEY is required in both cases (global).
+    """
+    if not config.get("NEBIUS_SSH_KEY"):
+        return False
+    regions = nebius_regions(config)
+    if not regions:
+        return False
+    for region in regions:
+        overlay = nebius_region_config(config, region)
+        if not all(overlay.get(f"NEBIUS_{s}") for s in NEBIUS_REQUIRED_SUFFIXES):
+            return False
+    return True
 
 
 def is_provider_configured(provider, config=None):
     """Check if a provider has been configured (all required keys present)."""
     if config is None:
         config = read_config()
+    if provider == "nebius":
+        return _is_nebius_configured(config)
     required = _REQUIRED_KEYS.get(provider, [])
     return all(k in config for k in required)
 

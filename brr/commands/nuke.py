@@ -432,9 +432,11 @@ def nuke(force, region, provider):
     """Nuclear option: Delete ALL cloud resources."""
     from brr.state import read_config
 
+    from brr.state import nebius_regions, nebius_region_config, nebius_region_key
+
     config = read_config() or {}
     has_aws = bool(config.get("AWS_REGION"))
-    has_nebius = bool(config.get("NEBIUS_PROJECT_ID"))
+    has_nebius = bool(nebius_regions(config))
     has_verda = bool(config.get("VERDA_SSH_KEY_ID"))
 
     targets = []
@@ -592,21 +594,49 @@ def nuke(force, region, provider):
         if "nebius" in targets:
             nebius_selected = [s for s in selected if s.startswith("nebius_")]
             if nebius_selected:
-                nebius_stats = _nuke_nebius(
-                    config["NEBIUS_PROJECT_ID"], progress, task,
-                    instances="nebius_instances" in selected,
-                    disks="nebius_disks" in selected,
-                    filesystems="nebius_filesystems" in selected,
-                    security_groups="nebius_security_groups" in selected,
-                )
-                # Clear stale resource IDs from config
+                regions_to_nuke = nebius_regions(config)
+                # Prompt region selection when interactive and multi-region.
+                if not force and len(regions_to_nuke) >= 2:
+                    region_choices = [
+                        Choice(value=r, name=f"Nebius region — {r}", enabled=True)
+                        for r in regions_to_nuke
+                    ]
+                    regions_to_nuke = inquirer.checkbox(
+                        message="Select Nebius regions to nuke",
+                        choices=region_choices,
+                        instruction="(space to toggle, enter to confirm)",
+                    ).execute()
+
+                nebius_stats = {"instances": 0, "disks": 0, "filesystems": 0, "security_groups": 0}
                 stale_nebius_keys = []
-                if nebius_stats.get("filesystems"):
-                    config["NEBIUS_FILESYSTEM_ID"] = ""
-                    stale_nebius_keys.append("NEBIUS_FILESYSTEM_ID")
-                if nebius_stats.get("security_groups"):
-                    config["NEBIUS_SECURITY_GROUP_ID"] = ""
-                    stale_nebius_keys.append("NEBIUS_SECURITY_GROUP_ID")
+                for region in regions_to_nuke:
+                    console.print(f"\n[red]Nuking Nebius region: {region}[/red]")
+                    overlay = nebius_region_config(config, region)
+                    project_id = overlay.get("NEBIUS_PROJECT_ID", "")
+                    if not project_id:
+                        console.print(f"  [yellow]No NEBIUS_PROJECT_ID for region '{region}', skipping[/yellow]")
+                        continue
+                    region_stats = _nuke_nebius(
+                        project_id, progress, task,
+                        instances="nebius_instances" in selected,
+                        disks="nebius_disks" in selected,
+                        filesystems="nebius_filesystems" in selected,
+                        security_groups="nebius_security_groups" in selected,
+                    )
+                    for k, v in region_stats.items():
+                        nebius_stats[k] = nebius_stats.get(k, 0) + v
+
+                    # Clear stale per-region resource IDs from config
+                    is_legacy = region == "default" and not config.get("NEBIUS_REGIONS")
+                    if region_stats.get("filesystems"):
+                        key = "NEBIUS_FILESYSTEM_ID" if is_legacy else nebius_region_key(region, "FILESYSTEM_ID")
+                        config[key] = ""
+                        stale_nebius_keys.append(key)
+                    if region_stats.get("security_groups"):
+                        key = "NEBIUS_SECURITY_GROUP_ID" if is_legacy else nebius_region_key(region, "SECURITY_GROUP_ID")
+                        config[key] = ""
+                        stale_nebius_keys.append(key)
+
                 if stale_nebius_keys:
                     from brr.state import write_config
                     write_config(config)

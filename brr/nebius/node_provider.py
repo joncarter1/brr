@@ -70,6 +70,10 @@ class NebiusNodeProvider(NodeProvider):
         # surfaces as "launch failed" and terminates the node.
         self._hidden_names = set()
         self._hidden_ids = set()
+        # Orphan-stopped instances currently being deleted by the background
+        # sweep in non_terminated_nodes. Guards against re-submitting the same
+        # delete on subsequent autoscaler polls while the first is in flight.
+        self._orphan_deleting = set()
 
     def _run(self, coro):
         """Submit a coroutine to the provider's background event loop.
@@ -473,6 +477,20 @@ class NebiusNodeProvider(NodeProvider):
             except Exception:
                 logger.warning(f"Failed to delete boot disk {boot_disk_id}", exc_info=True)
 
+    async def _delete_orphan(self, node_id):
+        """Delete a stopped instance that the autoscaler never asked for."""
+        try:
+            logger.info(f"Deleting orphan-stopped Nebius instance {node_id}")
+            await self._delete_instance_and_disk(node_id)
+        except Exception:
+            logger.warning(
+                f"Failed to delete orphan-stopped instance {node_id}",
+                exc_info=True,
+            )
+        finally:
+            with self.lock:
+                self._orphan_deleting.discard(node_id)
+
     def terminate_nodes(self, node_ids):
         for node_id in node_ids:
             self.terminate_node(node_id)
@@ -510,7 +528,26 @@ class NebiusNodeProvider(NodeProvider):
                     continue
 
                 state = inst.status.state if inst.status else None
-                if self._is_terminal(state) or self._is_stopped(state):
+                if self._is_terminal(state):
+                    continue
+                if self._is_stopped(state):
+                    # When cache_stopped_nodes is False, stopped instances are
+                    # orphans — preempted by Nebius, stopped by idle-shutdown,
+                    # or stopped from the console. Ray's scale-down deletes
+                    # directly, so anything we see stopped here wasn't asked
+                    # for. Fire-and-forget a delete so the poll loop stays
+                    # fast; _orphan_deleting prevents double-submits across
+                    # polls while a delete is in flight.
+                    if not self.cache_stopped_nodes and inst.metadata.id not in hidden_ids:
+                        should_submit = False
+                        with self.lock:
+                            if inst.metadata.id not in self._orphan_deleting:
+                                self._orphan_deleting.add(inst.metadata.id)
+                                should_submit = True
+                        if should_submit:
+                            asyncio.run_coroutine_threadsafe(
+                                self._delete_orphan(inst.metadata.id), self._loop
+                            )
                     continue
 
                 node_id = inst.metadata.id

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.15.1
+
+### Changed
+
+- Unified region flag across commands. `brr up` / `down` / `clean` now accept `--region <name>` matching `brr attach` / `brr vscode`, instead of the positional `region=<name>` override. Positional `region=X` on these commands no longer has special meaning.
+
+### Fixed
+
+- `brr up` now always runs `sync-repo.sh` on the cluster when the project is a git repo. Previously re-deploys silently skipped it, so a failed first-deploy clone (e.g. stale GitHub key on the cluster) left the repo missing with no way to recover short of manual `brr nuke` + re-up. `sync-repo.sh` is idempotent so re-deploys where the repo exists are no-ops.
+- Pre-flight git validation now runs on every `brr up` and uses `git fetch` + `git merge-base --is-ancestor HEAD origin/BRANCH` to catch unpushed commits. Previously `git log origin/BRANCH..HEAD` returned empty when the local `origin/BRANCH` ref was stale or missing, letting unpushed commits through and causing `sync-repo.sh` to fail on the head with an opaque "Could not parse object" from `git reset --hard`.
+- Post-deploy attach hint now emits `--region X` (Click option) instead of `region=X` (positional), matching how `brr attach` and `brr vscode` actually parse the region flag. Previously the suggested command ran `region=eu-west1` as a shell-level assignment on the remote instead of resolving the correct cluster.
+
 ## 0.15.0
 
 ### Added

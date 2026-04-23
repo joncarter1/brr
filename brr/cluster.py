@@ -104,12 +104,27 @@ def _validate_git_for_sync(project_root, git_info, config):
             "  Set an SSH remote: git remote set-url origin git@github.com:user/repo.git"
         )
 
-    # All changes must be pushed
+    # All changes must be pushed. Use `git fetch` to refresh origin refs first,
+    # otherwise `origin/BRANCH..HEAD` silently returns empty when the local
+    # remote ref is stale or missing, and sync-repo.sh's `git reset --hard`
+    # on the head then fails with "Could not parse object" because the commit
+    # was never pushed.
     branch = git_info["branch"]
-    r = _git("log", f"origin/{branch}..HEAD", "--oneline")
-    if r.returncode == 0 and r.stdout.strip():
-        count = len(r.stdout.strip().splitlines())
-        errors.append(f"{count} commit(s) not pushed to origin/{branch}. Push before deploying.")
+    _git("fetch", "--quiet", "origin", branch)
+    r = _git("rev-parse", "--verify", f"origin/{branch}")
+    if r.returncode != 0:
+        errors.append(
+            f"Branch '{branch}' is not on origin. Push it first: "
+            f"`git push -u origin {branch}`"
+        )
+    else:
+        r = _git("merge-base", "--is-ancestor", "HEAD", f"origin/{branch}")
+        if r.returncode != 0:
+            commit = git_info["commit"][:8]
+            errors.append(
+                f"Local commit {commit} is not reachable from origin/{branch}. "
+                f"Push before deploying."
+            )
 
     # GitHub SSH keys must be configured
     if not config.get("GITHUB_SSH_KEY"):
@@ -328,7 +343,7 @@ def _resolve_nebius_cluster_name_for_attach(tpl_name, project_root, config, regi
         names = ", ".join(v[0] for v in variants)
         raise click.UsageError(
             f"Multiple clusters match '{base}': {names}\n"
-            f"  Specify the region, e.g. `brr attach nebius:{tpl_name} region=<name>`"
+            f"  Specify the region, e.g. `brr attach nebius:{tpl_name} --region=<name>`"
         )
     # No variants found — return the base anyway (will fail downstream with a clear error)
     return base
@@ -383,7 +398,7 @@ def _staging_project_map():
     return mapping
 
 
-def _sync_ssh_config(provider, cluster_name, display_name=None):
+def _sync_ssh_config(provider, cluster_name, display_name=None, region_suffix=""):
     """Query the cloud for the cluster head IP and update local SSH config."""
     from brr.providers import get_provider
     from brr.ssh import update_ssh_config
@@ -398,8 +413,8 @@ def _sync_ssh_config(provider, cluster_name, display_name=None):
         update_ssh_config(ssh_alias, head_ip, prov.ssh_key(config), prov.ssh_user(config))
         attach_name = display_name or cluster_name
         console.print(f"Updated local SSH config: [green]{ssh_alias}[/green]")
-        console.print(f"  Connect with: [bold]brr attach {attach_name}[/bold]")
-        console.print(f"  VS Code:      [bold]brr vscode {attach_name}[/bold]")
+        console.print(f"  Connect with: [bold]brr attach {attach_name}{region_suffix}[/bold]")
+        console.print(f"  VS Code:      [bold]brr vscode {attach_name}{region_suffix}[/bold]")
     else:
         console.print(f"[yellow]Warning: could not find head IP for cluster '{cluster_name}'[/yellow]")
 
@@ -554,18 +569,24 @@ def up(template, overrides, yes, dry_run, no_project):
     cluster_name = _resolve_cluster_name(tpl_name, project_root, region=nebius_cluster_suffix)
     rendered["cluster_name"] = cluster_name
 
-    # First deploy: git clone the project. Re-deploy: infrastructure only.
-    sync_project = True
-    if project_root and not dry_run:
-        out_path = output_path_for(cluster_name, provider)
-        if out_path.exists():
-            sync_project = False
-
+    # Always emit sync-repo.sh when the project is a git repo — the script is
+    # idempotent (skips if $PROJECT_DIR/.git exists), so re-deploys cost nothing
+    # but recover when a first-deploy clone silently failed (e.g. stale GitHub
+    # key on the cluster) or when the cluster lands on a fresh shared FS in a
+    # new region. Validation always runs: a stale repo pin would fail sync-repo
+    # on the head with an opaque "Could not parse object" error; catching it
+    # here is cheaper than debugging it on the cluster.
     git_info = None
-    if project_root and sync_project:
+    if project_root:
         git_info = _get_git_info(project_root)
         if git_info is not None:
             _validate_git_for_sync(project_root, git_info, config)
+
+    first_deploy = True
+    if project_root and not dry_run:
+        out_path = output_path_for(cluster_name, provider)
+        if out_path.exists():
+            first_deploy = False
 
     staging = prepare_staging(
         cluster_name, provider, project_root=project_root,
@@ -594,11 +615,12 @@ def up(template, overrides, yes, dry_run, no_project):
         return
 
     if project_root and git_info:
-        console.print(f"Repo sync: [green]git clone {git_info['repo_name']}[/green] → ~/code/{git_info['repo_name']}/")
-    elif project_root and sync_project:
-        console.print(f"Repo sync: [yellow]skipped (not a git repo with remote)[/yellow]")
+        if first_deploy:
+            console.print(f"Repo sync: [green]git clone {git_info['repo_name']}[/green] → ~/code/{git_info['repo_name']}/")
+        else:
+            console.print(f"Repo sync: [dim]sync-repo.sh will run (no-op if already cloned)[/dim]")
     elif project_root:
-        console.print(f"Repo sync: [dim]skipped (re-deploy)[/dim]")
+        console.print(f"Repo sync: [yellow]skipped (not a git repo with remote)[/yellow]")
 
     out = output_path_for(cluster_name, provider)
     write_yaml(rendered, out)
@@ -618,7 +640,14 @@ def up(template, overrides, yes, dry_run, no_project):
     # Post-ray: sync SSH config even if ray up had warnings (non-zero exit)
     try:
         display_name = f"{provider}:{tpl_name}"
-        _sync_ssh_config(provider, cluster_name, display_name=display_name)
+        region_suffix = ""
+        if provider == "nebius" and nebius_cluster_suffix:
+            region_suffix = f" --region {nebius_cluster_suffix}"
+        _sync_ssh_config(
+            provider, cluster_name,
+            display_name=display_name,
+            region_suffix=region_suffix,
+        )
     except Exception as e:
         console.print(f"[yellow]Warning: SSH config sync failed: {e}[/yellow]")
 

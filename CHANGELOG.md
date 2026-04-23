@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.15.0
+
+### Added
+
+- **Multi-region Nebius.** Configure any number of Nebius regions via `NEBIUS_REGIONS=eu-north1,us-central1,...` and per-region keys `NEBIUS_{REGION}_PROJECT_ID` / `_SUBNET_ID` / `_SECURITY_GROUP_ID` / `_FILESYSTEM_ID` / `_SERVICE_ACCOUNT_ID` / `_S3_ACCESS_KEY_ID` / `_S3_SECRET_KEY`. Flat single-region configs (`NEBIUS_PROJECT_ID`, …) still work unchanged.
+- `region=X` override on `brr up` / `attach` / `down` / `vscode` for Nebius; cluster names get a `-{region}` suffix when 2+ regions are configured so names don't collide. Region is recorded in each cluster's staging `brr_meta.json` for O(1) resolution on subsequent commands.
+- `brr list` and `brr nuke` iterate configured Nebius regions in parallel; `nuke` prompts which region(s) to target when more than one is configured.
+- New `brr/nebius/templates/h200.yaml` — single-node H200 GPU dev box (`gpu-h200-sxm`, `1gpu-16vcpu-200gb`).
+
+### Fixed
+
+- Nebius autoscaler now deletes orphan-stopped instances (preempted workers, idle-shutdown, or console-stopped) when `cache_stopped_nodes` is false. Previously these lingered indefinitely, accruing disk costs.
+- Service account key generation bumped from 2048-bit to 4096-bit RSA (Nebius IAM now requires 4096).
+- Configure wizard rebuilds the Nebius SDK per async block instead of caching it — a cached SDK binds its gRPC channel to the first event loop it sees and crashes on the next `asyncio.run()` with "Event loop is closed".
+
 ## 0.14.2
 
 ### Added

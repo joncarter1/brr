@@ -265,6 +265,9 @@ async def _terminate_cluster_instances(project_id, cluster_name):
         InstanceServiceClient,
         ListInstancesRequest,
         DeleteInstanceRequest,
+        DiskServiceClient,
+        ListDisksRequest,
+        DeleteDiskRequest,
     )
 
     sdk = _nebius_sdk()
@@ -290,4 +293,21 @@ async def _terminate_cluster_instances(project_id, cluster_name):
                 count += 1
             except Exception:
                 pass
+
+        # Sweep orphan disks — preserved recycle disks plus any disk left
+        # behind by a partial instance-delete. Match on ray-cluster-name
+        # alone: any disk carrying that label after the instances are gone
+        # is an orphan by definition.
+        disk_client = DiskServiceClient(sdk)
+        disk_resp = await disk_client.list(ListDisksRequest(parent_id=project_id))
+        for d in disk_resp.items:
+            labels = dict(d.metadata.labels) if d.metadata.labels else {}
+            if labels.get("ray-cluster-name") != cluster_name:
+                continue
+            try:
+                op = await disk_client.delete(DeleteDiskRequest(id=d.metadata.id))
+                await op.wait()
+            except Exception:
+                pass
+
         return count

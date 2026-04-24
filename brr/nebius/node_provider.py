@@ -32,6 +32,12 @@ class NebiusNodeProvider(NodeProvider):
         # Default to deleting nodes on scale-down to avoid surprise charges.
         # Set cache_stopped_nodes: true in the provider config to keep them.
         self.cache_stopped_nodes = provider_config.get("cache_stopped_nodes", False)
+        # Preempted preemptible instances can preserve their boot disk for a
+        # window so that a fresh replacement spawned by pending demand skips
+        # setup.sh. 0 disables the feature. Default ~10 min: enough for Ray
+        # to notice NodeTerminated and redrive create_node; short enough that
+        # disks don't linger under sustained low demand.
+        self._recycle_ttl_seconds = int(provider_config.get("preempt_recycle_ttl_seconds", 600))
 
         from pathlib import Path
         from nebius.sdk import SDK
@@ -74,6 +80,14 @@ class NebiusNodeProvider(NodeProvider):
         # sweep in non_terminated_nodes. Guards against re-submitting the same
         # delete on subsequent autoscaler polls while the first is in flight.
         self._orphan_deleting = set()
+        # Instances whose boot disk is being preserved for recycling
+        # (DeleteInstance in flight, don't re-submit).
+        self._preserving_disk_for = set()
+        # Recyclable disks being deleted by the TTL sweep.
+        self._orphan_disk_deleting = set()
+        # Recyclable disks currently being claimed (label-strip in flight) so
+        # two concurrent create_node calls don't grab the same disk.
+        self._claiming_disks = set()
 
     def _run(self, coro):
         """Submit a coroutine to the provider's background event loop.
@@ -323,25 +337,52 @@ class NebiusNodeProvider(NodeProvider):
                 size_gibibytes=disk_size_gb,
             )
 
-            try:
-                disk_op = await disk_client.create(CreateDiskRequest(
-                    metadata=ResourceMetadata(
-                        parent_id=self.project_id,
-                        name=disk_name,
-                        labels=labels,
-                    ),
-                    spec=disk_spec,
-                ))
-                await disk_op.wait()
-                disk_id = disk_op.resource_id
-                logger.info(f"Created boot disk {disk_id} for {name}")
-            except Exception as e:
-                if "ALREADY_EXISTS" not in str(e):
-                    raise
-                disk_id = await self._find_disk_by_name(disk_client, disk_name)
-                if not disk_id:
-                    raise
-                logger.info(f"Reusing existing boot disk {disk_id} for {name}")
+            # Try recycling a preserved disk from a recent preemption. Gated
+            # on matching user_node_type + size + image so template changes
+            # force a fresh disk. Claim via label-strip before attach so two
+            # concurrent create_node calls can't grab the same disk.
+            disk_id = None
+            recycled = False
+            user_node_type = tags.get(TAG_RAY_USER_NODE_TYPE)
+            if user_node_type and self._recycle_ttl_seconds > 0:
+                candidate = await self._find_recyclable_disk(
+                    user_node_type, disk_size_gb, image_family,
+                )
+                if candidate:
+                    with self.lock:
+                        self._claiming_disks.add(candidate)
+                    try:
+                        if await self._claim_disk(candidate):
+                            disk_id = candidate
+                            recycled = True
+                            logger.info(
+                                f"Recycled boot disk {disk_id} for {name} "
+                                f"(skipping setup.sh reinstall)"
+                            )
+                    finally:
+                        with self.lock:
+                            self._claiming_disks.discard(candidate)
+
+            if not recycled:
+                try:
+                    disk_op = await disk_client.create(CreateDiskRequest(
+                        metadata=ResourceMetadata(
+                            parent_id=self.project_id,
+                            name=disk_name,
+                            labels=labels,
+                        ),
+                        spec=disk_spec,
+                    ))
+                    await disk_op.wait()
+                    disk_id = disk_op.resource_id
+                    logger.info(f"Created boot disk {disk_id} for {name}")
+                except Exception as e:
+                    if "ALREADY_EXISTS" not in str(e):
+                        raise
+                    disk_id = await self._find_disk_by_name(disk_client, disk_name)
+                    if not disk_id:
+                        raise
+                    logger.info(f"Reusing existing boot disk {disk_id} for {name}")
 
             # 2. Create instance with the disk attached
             # Inject SSH public key via cloud-init if available.
@@ -491,6 +532,218 @@ class NebiusNodeProvider(NodeProvider):
             with self.lock:
                 self._orphan_deleting.discard(node_id)
 
+    # --- Boot-disk recycling across preemption ---
+
+    _RECYCLE_LABEL_PREFIX = "brr-recycle-"
+    _RECYCLE_UNTIL_LABEL = "brr-recycle-until"
+    _RECYCLE_SIZE_LABEL = "brr-recycle-size-gb"
+    _RECYCLE_IMAGE_LABEL = "brr-recycle-image-family"
+
+    async def _preserve_disk_delete_instance(self, node_id):
+        """Delete a preempted instance but keep its boot disk tagged for reuse.
+
+        The disk gets recycle labels (TTL + size + image) so later create_node
+        calls can find it. If anything in the preservation path fails, fall
+        back to the full delete so we don't leak the instance.
+        """
+        import time
+        from nebius.api.nebius.compute.v1 import UpdateDiskRequest
+        from nebius.api.nebius.common.v1 import ResourceMetadata
+
+        try:
+            inst = await self._fetch_instance(node_id)
+            if not inst or not (inst.spec and inst.spec.boot_disk):
+                raise RuntimeError("instance has no boot disk to preserve")
+            boot_disk_id = inst.spec.boot_disk.existing_disk.id
+            disk_client = self._disk_client()
+
+            # Read disk metadata BEFORE deleting the instance so we can carry
+            # size + image_family into the recycle labels. (source_image_family
+            # is set at CreateDisk time only.)
+            from nebius.api.nebius.compute.v1 import GetDiskRequest, DeleteInstanceRequest
+            disk = await disk_client.get(GetDiskRequest(id=boot_disk_id))
+            existing_labels = dict(disk.metadata.labels) if disk.metadata.labels else {}
+            existing_size = int(disk.spec.size_gibibytes) if disk.spec and disk.spec.size_gibibytes else 0
+            image_family = ""
+            if disk.spec and disk.spec.source_image_family:
+                image_family = disk.spec.source_image_family.image_family or ""
+
+            # Delete the instance FIRST so the disk detaches — UpdateDisk on an
+            # attached disk can be rejected for "active operation" reasons.
+            client = self._instance_client()
+            del_op = await client.delete(DeleteInstanceRequest(id=node_id))
+            await del_op.wait()
+
+            # Now label the orphan disk for recycling.
+            expiry = int(time.time()) + self._recycle_ttl_seconds
+            new_labels = dict(existing_labels)
+            new_labels[self._RECYCLE_UNTIL_LABEL] = str(expiry)
+            new_labels[self._RECYCLE_SIZE_LABEL] = str(existing_size)
+            new_labels[self._RECYCLE_IMAGE_LABEL] = image_family
+            update_req = UpdateDiskRequest(
+                metadata=ResourceMetadata(id=boot_disk_id, labels=new_labels),
+            )
+            op = await disk_client.update(update_req)
+            await op.wait()
+            logger.info(
+                f"Preserved boot disk {boot_disk_id} (TTL {self._recycle_ttl_seconds}s), "
+                f"deleted preempted instance {node_id}"
+            )
+        except Exception:
+            logger.warning(
+                f"Preserve-disk failed for preempted {node_id}; falling back to full delete",
+                exc_info=True,
+            )
+            try:
+                await self._delete_instance_and_disk(node_id)
+            except Exception:
+                logger.warning(f"Fallback delete also failed for {node_id}", exc_info=True)
+        finally:
+            with self.lock:
+                self._preserving_disk_for.discard(node_id)
+
+    async def _find_recyclable_disk(self, user_node_type, disk_size_gb, image_family):
+        """Return a recyclable disk id matching the node_type/size/image, or None."""
+        import time
+        from nebius.api.nebius.compute.v1 import ListDisksRequest
+
+        if self._recycle_ttl_seconds <= 0:
+            return None
+
+        client = self._disk_client()
+        page_token = None
+        candidates = []
+        now = int(time.time())
+        with self.lock:
+            claiming = set(self._claiming_disks)
+            deleting = set(self._orphan_disk_deleting)
+        while True:
+            req = ListDisksRequest(parent_id=self.project_id)
+            if page_token:
+                req.page_token = page_token
+            resp = await client.list(req)
+            for d in resp.items:
+                if d.metadata.id in claiming or d.metadata.id in deleting:
+                    continue
+                labels = dict(d.metadata.labels) if d.metadata.labels else {}
+                if labels.get(TAG_RAY_CLUSTER_NAME) != self.cluster_name:
+                    continue
+                if labels.get(TAG_RAY_USER_NODE_TYPE) != user_node_type:
+                    continue
+                until = labels.get(self._RECYCLE_UNTIL_LABEL)
+                if not until:
+                    continue
+                try:
+                    until_ts = int(until)
+                except ValueError:
+                    continue
+                if until_ts <= now:
+                    continue  # expired — leave for the sweep to delete
+                # Gate on size + image match so template changes don't reuse
+                # the wrong disk.
+                if labels.get(self._RECYCLE_SIZE_LABEL) != str(disk_size_gb):
+                    continue
+                if labels.get(self._RECYCLE_IMAGE_LABEL) != image_family:
+                    continue
+                created_ts = 0
+                if d.metadata.created_at:
+                    created_ts = d.metadata.created_at.seconds
+                candidates.append((created_ts, d.metadata.id))
+            if not resp.next_page_token:
+                break
+            page_token = resp.next_page_token
+
+        if not candidates:
+            return None
+        # FIFO: oldest first, so the youngest disks stay around for other claimants.
+        candidates.sort()
+        return candidates[0][1]
+
+    async def _claim_disk(self, disk_id):
+        """Strip recycle labels from a disk. Returns True on success.
+
+        False means the disk disappeared / was claimed by someone else / got
+        swept; the caller should fall back to creating a fresh disk.
+        """
+        from nebius.api.nebius.compute.v1 import GetDiskRequest, UpdateDiskRequest
+        from nebius.api.nebius.common.v1 import ResourceMetadata
+
+        client = self._disk_client()
+        try:
+            disk = await client.get(GetDiskRequest(id=disk_id))
+        except Exception:
+            return False
+        labels = dict(disk.metadata.labels) if disk.metadata.labels else {}
+        # Someone else already claimed it.
+        if self._RECYCLE_UNTIL_LABEL not in labels:
+            return False
+        for key in (self._RECYCLE_UNTIL_LABEL, self._RECYCLE_SIZE_LABEL, self._RECYCLE_IMAGE_LABEL):
+            labels.pop(key, None)
+        try:
+            op = await client.update(UpdateDiskRequest(
+                metadata=ResourceMetadata(id=disk_id, labels=labels),
+            ))
+            await op.wait()
+            return True
+        except Exception:
+            logger.warning(f"Failed to claim recycle disk {disk_id}", exc_info=True)
+            return False
+
+    async def _sweep_expired_recycle_disks(self):
+        """Delete recycle disks whose TTL has passed."""
+        import time
+        from nebius.api.nebius.compute.v1 import ListDisksRequest
+
+        client = self._disk_client()
+        now = int(time.time())
+        page_token = None
+        to_delete = []
+        while True:
+            req = ListDisksRequest(parent_id=self.project_id)
+            if page_token:
+                req.page_token = page_token
+            resp = await client.list(req)
+            for d in resp.items:
+                labels = dict(d.metadata.labels) if d.metadata.labels else {}
+                if labels.get(TAG_RAY_CLUSTER_NAME) != self.cluster_name:
+                    continue
+                until = labels.get(self._RECYCLE_UNTIL_LABEL)
+                if not until:
+                    continue
+                try:
+                    until_ts = int(until)
+                except ValueError:
+                    continue
+                if until_ts <= now:
+                    to_delete.append(d.metadata.id)
+            if not resp.next_page_token:
+                break
+            page_token = resp.next_page_token
+
+        for disk_id in to_delete:
+            should_submit = False
+            with self.lock:
+                if disk_id not in self._orphan_disk_deleting:
+                    self._orphan_disk_deleting.add(disk_id)
+                    should_submit = True
+            if should_submit:
+                asyncio.run_coroutine_threadsafe(
+                    self._delete_expired_recycle_disk(disk_id), self._loop
+                )
+
+    async def _delete_expired_recycle_disk(self, disk_id):
+        from nebius.api.nebius.compute.v1 import DeleteDiskRequest
+        try:
+            client = self._disk_client()
+            op = await client.delete(DeleteDiskRequest(id=disk_id))
+            await op.wait()
+            logger.info(f"Deleted expired recycle disk {disk_id}")
+        except Exception:
+            logger.warning(f"Failed to delete expired recycle disk {disk_id}", exc_info=True)
+        finally:
+            with self.lock:
+                self._orphan_disk_deleting.discard(disk_id)
+
     def terminate_nodes(self, node_ids):
         for node_id in node_ids:
             self.terminate_node(node_id)
@@ -536,18 +789,34 @@ class NebiusNodeProvider(NodeProvider):
                     # or stopped from the console. Ray's scale-down deletes
                     # directly, so anything we see stopped here wasn't asked
                     # for. Fire-and-forget a delete so the poll loop stays
-                    # fast; _orphan_deleting prevents double-submits across
-                    # polls while a delete is in flight.
+                    # fast; tracking sets prevent double-submits across polls.
                     if not self.cache_stopped_nodes and inst.metadata.id not in hidden_ids:
-                        should_submit = False
-                        with self.lock:
-                            if inst.metadata.id not in self._orphan_deleting:
-                                self._orphan_deleting.add(inst.metadata.id)
-                                should_submit = True
-                        if should_submit:
-                            asyncio.run_coroutine_threadsafe(
-                                self._delete_orphan(inst.metadata.id), self._loop
-                            )
+                        # Preempted preemptible instance + recycling enabled:
+                        # preserve the boot disk so a fresh replacement can
+                        # reattach it and skip setup.sh.
+                        is_preempt = bool(inst.spec and inst.spec.preemptible)
+                        recycle = is_preempt and self._recycle_ttl_seconds > 0
+                        if recycle:
+                            should_submit = False
+                            with self.lock:
+                                if inst.metadata.id not in self._preserving_disk_for:
+                                    self._preserving_disk_for.add(inst.metadata.id)
+                                    should_submit = True
+                            if should_submit:
+                                asyncio.run_coroutine_threadsafe(
+                                    self._preserve_disk_delete_instance(inst.metadata.id),
+                                    self._loop,
+                                )
+                        else:
+                            should_submit = False
+                            with self.lock:
+                                if inst.metadata.id not in self._orphan_deleting:
+                                    self._orphan_deleting.add(inst.metadata.id)
+                                    should_submit = True
+                            if should_submit:
+                                asyncio.run_coroutine_threadsafe(
+                                    self._delete_orphan(inst.metadata.id), self._loop
+                                )
                     continue
 
                 node_id = inst.metadata.id
@@ -558,6 +827,10 @@ class NebiusNodeProvider(NodeProvider):
             if not response.next_page_token:
                 break
             page_token = response.next_page_token
+
+        # Expire recycle disks that weren't reclaimed within the TTL.
+        if self._recycle_ttl_seconds > 0:
+            await self._sweep_expired_recycle_disks()
 
         return nodes
 

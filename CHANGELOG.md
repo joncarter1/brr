@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.15.1
+## 0.16.0
+
+### Added
+
+- **Nebius preemptible boot-disk recycling.** When a preemptible Nebius instance is preempted (stopped by Nebius out-of-band), the boot disk is now preserved with TTL-tagged recycle labels instead of deleted. A replacement instance spawned by pending Ray demand within the TTL attaches the existing disk and skips `setup.sh` reinstall (CUDA drivers, uv, apt packages, idle-shutdown) — cutting replacement-worker setup from minutes to ~60s. Disks unclaimed past the TTL are swept, matching the previous behavior for the "low demand / scale-down" case. Controlled by the new `preempt_recycle_ttl_seconds` provider-block option (default 600s, `0` disables).
+- Users with `NEBIUS_FILESYSTEM_ID` shared FS already have code persistence; this extends the win to the local environment state that lives on the boot disk.
+
+### Fixed
+
+- `brr down --delete` and `brr/nebius/nodes.py:_terminate_cluster_instances` now sweep any orphan disks carrying the cluster's `ray-cluster-name` label (not just recycle-tagged ones), preventing leaks from partial instance-delete failures in addition to the new recycle flow.
 
 ### Changed
 

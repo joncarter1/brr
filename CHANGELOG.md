@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.16.1
+
+### Fixed
+
+- `setup.sh` no longer races on `~/.aws/credentials` when the Nebius autoscaler launches multiple workers at once. `aws configure set` does an unlocked truncate-then-write, and because `$HOME` is bind-mounted from `/shared/home` (virtiofs), concurrent workers interleaved bytes and corrupted the credentials file — which then made every subsequent worker's `setup.sh` die at the `aws configure` parse step, so the autoscaler tore them down. Workers now skip the block when `~/.aws/credentials` already exists; the head still writes it on first boot and workers inherit it via the shared mount.
+- `brr/aws/templates/cpu.yaml` now lists `us-east-1{a,b,c,d}` instead of pinning to `us-east-1f`, restoring placement flexibility when `1f` is out of capacity.
+
+### Added
+
+- `_brr.shared=false` template flag zeros `EFS_ID` / `NEBIUS_FILESYSTEM_ID` / `VERDA_SHARED_VOLUME_ID` in the staged `config.env`, so `setup.sh` skips mounting any shared filesystem on that cluster.
+
 ## 0.16.0
 
 ### Added

@@ -508,14 +508,25 @@ if [ "${PROVIDER:-}" = "nebius" ]; then
     info "Nebius credentials configured"
   fi
 
-  # Configure AWS CLI for Object Storage access
+  # Configure AWS CLI for Object Storage access. ~/.aws lives on the shared
+  # virtiofs (bind-mounted from /shared/home), and `aws configure set` does an
+  # unlocked truncate-then-write — concurrent autoscaler workers racing on
+  # this file corrupt it (and corruption is sticky: subsequent `aws configure
+  # set` calls fail to parse the file, so every worker that boots after dies
+  # in setup.sh and the autoscaler tears it down). Head always runs setup.sh
+  # to completion before the autoscaler launches workers, so workers can just
+  # inherit whatever the head wrote.
   if [ -n "${NEBIUS_S3_ACCESS_KEY_ID:-}" ] && [ -n "${NEBIUS_S3_SECRET_KEY:-}" ]; then
     ensure_aws_cli
-    aws configure set aws_access_key_id "$NEBIUS_S3_ACCESS_KEY_ID"
-    aws configure set aws_secret_access_key "$NEBIUS_S3_SECRET_KEY"
-    aws configure set region "${NEBIUS_REGION:-eu-north1}"
-    aws configure set endpoint_url "https://storage.${NEBIUS_REGION:-eu-north1}.nebius.cloud:443"
-    info "AWS CLI configured for Nebius Object Storage"
+    if [ -f "$HOME/.aws/credentials" ] && [ -f "$HOME/.aws/config" ]; then
+      info "AWS CLI already configured (shared \$HOME)"
+    else
+      aws configure set aws_access_key_id "$NEBIUS_S3_ACCESS_KEY_ID"
+      aws configure set aws_secret_access_key "$NEBIUS_S3_SECRET_KEY"
+      aws configure set region "${NEBIUS_REGION:-eu-north1}"
+      aws configure set endpoint_url "https://storage.${NEBIUS_REGION:-eu-north1}.nebius.cloud:443"
+      info "AWS CLI configured for Nebius Object Storage"
+    fi
   fi
 fi
 

@@ -570,9 +570,20 @@ def up(template, overrides, yes, dry_run, no_project, region):
         if out_path.exists():
             first_deploy = False
 
+    # _brr.shared=false: skip mounting any shared filesystem (EFS / virtiofs /
+    # Verda volume) by zeroing the relevant config keys in the staged
+    # config.env. setup.sh already short-circuits when these are empty.
+    config_overlay = dict(nebius_overlay or {})
+    if template_aliases.get("shared") is False:
+        config_overlay.update({
+            "EFS_ID": "",
+            "NEBIUS_FILESYSTEM_ID": "",
+            "VERDA_SHARED_VOLUME_ID": "",
+        })
+
     staging = prepare_staging(
         cluster_name, provider, project_root=project_root,
-        config_overlay=nebius_overlay,
+        config_overlay=config_overlay or None,
     )
     inject_brr_infra(rendered, staging, git_info=git_info, brr_meta=template_aliases)
 

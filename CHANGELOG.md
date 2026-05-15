@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.2
+
+### Fixed
+
+- **AWS orphaned stopped-instance EBS leak.** The idle-shutdown daemon runs on every node and calls `shutdown -h now`; EC2's default `InstanceInitiatedShutdownBehavior` is `stop`, so idle workers were *stopped*, not terminated. Ray's stock AWS provider lists only `pending`/`running` instances in `non_terminated_nodes`, so a stopped instance is invisible to the autoscaler — never reused (reuse is gated on `cache_stopped_nodes: true`) and never reaped, even by `ray down`. Each husk lingered indefinitely with its EBS volume — 972 accumulated on a single cluster. `templates.py:inject_brr_infra` now sets `InstanceInitiatedShutdownBehavior: terminate` on every non-head node type when the provider is AWS and `cache_stopped_nodes` is false, so an idle worker terminates and its root volume is released via `DeleteOnTermination`. The head keeps the `stop` default so an idle head stays recoverable via `ray up`. Applies to built-in and user/project templates with no YAML changes. This is the AWS counterpart to the Nebius orphan-stopped fix in 0.15.0.
+- `brr up` now sweeps the target cluster's orphaned stopped instances before launch (AWS, `cache_stopped_nodes` false; best-effort) as a backstop for console-stopped or legacy husks.
+
 ## 0.16.1
 
 ### Fixed

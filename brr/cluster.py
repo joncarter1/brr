@@ -607,6 +607,27 @@ def up(template, overrides, yes, dry_run, no_project, region):
         console.print(yaml.dump(rendered, default_flow_style=False, sort_keys=False), end="", highlight=False)
         return
 
+    # Self-heal backstop: with cache_stopped_nodes false, Ray's stock AWS
+    # provider never reuses or reaps a stopped instance — anything stopped
+    # out-of-band (console-stop, legacy idle-shutdown husks) is an orphan
+    # leaking its EBS volume. Sweep this cluster's orphans before launch.
+    # Skipped when nodes are cached (a stopped node is then intentional).
+    if provider == "aws" and not rendered.get("provider", {}).get(
+        "cache_stopped_nodes", False
+    ):
+        from brr.providers import get_provider
+        try:
+            swept = get_provider(provider).cleanup_stopped(config, cluster_name)
+            if swept:
+                console.print(
+                    f"[dim]Swept {swept} orphaned stopped instance(s) "
+                    f"for '{cluster_name}'[/dim]"
+                )
+        except Exception as e:
+            console.print(
+                f"[yellow]Warning: orphaned-instance sweep failed: {e}[/yellow]"
+            )
+
     if project_root and git_info:
         if first_deploy:
             console.print(f"Repo sync: [green]git clone {git_info['repo_name']}[/green] → ~/code/{git_info['repo_name']}/")

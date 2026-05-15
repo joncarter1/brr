@@ -28,6 +28,11 @@ class AWSProvider(Provider):
         from brr.aws.nodes import terminate_cluster_instances
         return terminate_cluster_instances(config.get("AWS_REGION", "us-east-1"), cluster_name)
 
+    def cleanup_stopped(self, config, cluster_name):
+        """Terminate orphaned stopped instances for one cluster. Returns count."""
+        from brr.aws.nodes import cleanup_stopped_instances
+        return cleanup_stopped_instances(config.get("AWS_REGION", "us-east-1"), cluster_name)
+
     def query_stopped(self, config, cluster_name=None):
         import boto3
         region = config.get("AWS_REGION", "us-east-1")

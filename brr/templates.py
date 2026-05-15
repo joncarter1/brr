@@ -628,6 +628,25 @@ def inject_brr_infra(config, staging, git_info=None, brr_meta=None):
                     nc = nt.get("node_config", {})
                     nc.setdefault("ssh_public_key", pub_key_content)
 
+    # AWS: with cache_stopped_nodes false, Ray's stock provider never reaps a
+    # stopped instance. The idle-shutdown daemon runs on every node and calls
+    # `shutdown -h now`, which — under the EC2 default
+    # InstanceInitiatedShutdownBehavior — STOPS the instance, orphaning it and
+    # its EBS volume indefinitely. Force worker instances to TERMINATE on
+    # self-shutdown so the root volume is released (DeleteOnTermination). The
+    # head keeps the default (stop) so an idle head stays recoverable via
+    # `ray up`. Skipped when nodes are cached (a stopped node is then
+    # intentional) and when a template sets the value explicitly.
+    if provider_block.get("type") == "aws" and not provider_block.get(
+        "cache_stopped_nodes", False
+    ):
+        head_nt = config.get("head_node_type")
+        for nt_name, nt in config.get("available_node_types", {}).items():
+            if nt_name == head_nt:
+                continue
+            nc = nt.setdefault("node_config", {})
+            nc.setdefault("InstanceInitiatedShutdownBehavior", "terminate")
+
     # Project repo sync: write git metadata to staging, clone via setup_command.
     if git_info is not None:
         import json

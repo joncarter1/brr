@@ -311,3 +311,96 @@ async def _terminate_cluster_instances(project_id, cluster_name):
                 pass
 
         return count
+
+
+SWEEP_TIMEOUT = 180
+
+
+def cleanup_orphan_disks(project_id, cluster_name):
+    """Delete this cluster's leaked boot disks. Safe against a LIVE cluster.
+
+    A disk is swept only if it (a) carries this cluster's ray-cluster-name
+    label, (b) is not referenced as boot/secondary disk by ANY current
+    instance, and (c) carries no unexpired brr-recycle-until label. This
+    catches both leak mechanisms' residue: disks abandoned when CreateInstance
+    failed (no instance ever existed) and disks left behind when a delete lost
+    the detach race. Returns the count deleted. Best-effort.
+    """
+    try:
+        return asyncio.run(
+            asyncio.wait_for(
+                _cleanup_orphan_disks(project_id, cluster_name),
+                timeout=SWEEP_TIMEOUT,
+            )
+        )
+    except asyncio.TimeoutError:
+        return 0
+
+
+def _referenced_disk_ids(instances):
+    """Every disk id any instance references — boot + secondary, any state."""
+    ref = set()
+    for inst in instances:
+        spec = getattr(inst, "spec", None)
+        if not spec:
+            continue
+        bd = getattr(spec, "boot_disk", None)
+        ed = getattr(bd, "existing_disk", None) if bd else None
+        if ed and getattr(ed, "id", None):
+            ref.add(ed.id)
+        for sd in getattr(spec, "secondary_disks", None) or []:
+            sed = getattr(sd, "existing_disk", None)
+            if sed and getattr(sed, "id", None):
+                ref.add(sed.id)
+    return ref
+
+
+async def _cleanup_orphan_disks(project_id, cluster_name):
+    import time
+
+    from nebius.api.nebius.compute.v1 import (
+        InstanceServiceClient,
+        ListInstancesRequest,
+        DiskServiceClient,
+        ListDisksRequest,
+        DeleteDiskRequest,
+    )
+
+    sdk = _nebius_sdk()
+    async with sdk:
+        inst_client = InstanceServiceClient(sdk)
+        inst_resp = await inst_client.list(ListInstancesRequest(parent_id=project_id))
+        attached = _referenced_disk_ids(inst_resp.items)
+
+        disk_client = DiskServiceClient(sdk)
+        disk_resp = await disk_client.list(ListDisksRequest(parent_id=project_id))
+
+        now = int(time.time())
+        targets = []
+        for d in disk_resp.items:
+            labels = dict(d.metadata.labels) if d.metadata.labels else {}
+            if labels.get("ray-cluster-name") != cluster_name:
+                continue
+            if d.metadata.id in attached:
+                continue
+            until = labels.get("brr-recycle-until")
+            if until:
+                try:
+                    if int(until) > now:
+                        continue  # still claimable from the recycle pool
+                except ValueError:
+                    pass
+            targets.append(d.metadata.id)
+
+        count = 0
+        for disk_id in targets:
+            try:
+                op = await disk_client.delete(DeleteDiskRequest(id=disk_id))
+                await op.wait()
+                count += 1
+            except Exception:
+                # Attached-to-live (FAILED_PRECONDITION) or transient — leave
+                # it; the node-provider retry path and the next `brr up` will
+                # catch anything real. Never force-delete here.
+                pass
+        return count

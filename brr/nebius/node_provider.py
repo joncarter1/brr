@@ -462,6 +462,51 @@ class NebiusNodeProvider(NodeProvider):
                 await op.wait()
                 node_id = op.resource_id
                 logger.info(f"Created Nebius instance {node_id} ({name})")
+            except Exception:
+                # The disk was created (or claimed) BEFORE the instance —
+                # Nebius needs an existing disk to attach. If CreateInstance
+                # fails (commonly: the platform/preset isn't available in this
+                # region, or no preemptible capacity), the disk is otherwise
+                # abandoned with no instance: invisible to the instance-centric
+                # orphan sweep and leaked forever. This is the dominant leak on
+                # region-blind templates (e.g. an h100 node type scheduled into
+                # a region that only offers h200).
+                if recycled:
+                    # Reusable disk: return it to the recycle pool rather than
+                    # destroy a warm (setup.sh-provisioned) disk. _claim_disk
+                    # stripped the recycle labels, so re-apply them.
+                    try:
+                        import time
+                        from nebius.api.nebius.compute.v1 import UpdateDiskRequest
+
+                        relabel = dict(labels)
+                        relabel[self._RECYCLE_UNTIL_LABEL] = str(
+                            int(time.time()) + self._recycle_ttl_seconds
+                        )
+                        relabel[self._RECYCLE_SIZE_LABEL] = str(disk_size_gb)
+                        relabel[self._RECYCLE_IMAGE_LABEL] = image_family
+                        rop = await disk_client.update(UpdateDiskRequest(
+                            metadata=ResourceMetadata(id=disk_id, labels=relabel),
+                        ))
+                        await rop.wait()
+                        logger.warning(
+                            f"CreateInstance failed for {name}; returned "
+                            f"recycled disk {disk_id} to the pool"
+                        )
+                    except Exception:
+                        logger.warning(
+                            f"CreateInstance failed for {name}; could not "
+                            f"re-tag recycled disk {disk_id}, deleting it",
+                            exc_info=True,
+                        )
+                        await self._delete_disk_with_retry(disk_id)
+                else:
+                    logger.warning(
+                        f"CreateInstance failed for {name}; deleting orphaned "
+                        f"boot disk {disk_id}"
+                    )
+                    await self._delete_disk_with_retry(disk_id)
+                raise
             finally:
                 with self.lock:
                     self._hidden_names.discard(name)
@@ -490,12 +535,46 @@ class NebiusNodeProvider(NodeProvider):
         else:
             await self._delete_instance_and_disk(node_id)
 
+    async def _delete_disk_with_retry(self, disk_id, max_attempts=6):
+        """Delete a disk, retrying the post-detach race.
+
+        Right after an instance delete the boot disk is still detaching, so
+        DeleteDisk raises FAILED_PRECONDITION. A single attempt (the old
+        behaviour) silently leaked the disk forever. Retry only on
+        FAILED_PRECONDITION with linear backoff; any other error (incl. a
+        disk genuinely still attached to a *live* instance, which also raises
+        FAILED_PRECONDITION but never clears) is logged and given up on after
+        the budget so we never spin forever. Mirrors nuke.py's loop.
+        Returns True if the disk was deleted (or already gone).
+        """
+        from nebius.api.nebius.compute.v1 import DeleteDiskRequest
+
+        disk_client = self._disk_client()
+        for attempt in range(max_attempts):
+            if attempt:
+                await asyncio.sleep(10 * attempt)
+            try:
+                disk_op = await disk_client.delete(DeleteDiskRequest(id=disk_id))
+                await disk_op.wait()
+                logger.info(f"Deleted boot disk {disk_id}")
+                return True
+            except Exception as e:
+                msg = str(e)
+                if "NOT_FOUND" in msg:
+                    return True  # already gone — idempotent
+                if "FAILED_PRECONDITION" in msg and attempt < max_attempts - 1:
+                    continue  # still detaching — back off and retry
+                logger.warning(
+                    f"Failed to delete boot disk {disk_id} after "
+                    f"{attempt + 1} attempt(s)",
+                    exc_info=True,
+                )
+                return False
+        return False
+
     async def _delete_instance_and_disk(self, node_id):
         """Delete an instance and its boot disk."""
-        from nebius.api.nebius.compute.v1 import (
-            DeleteInstanceRequest,
-            DeleteDiskRequest,
-        )
+        from nebius.api.nebius.compute.v1 import DeleteInstanceRequest
 
         # Fetch instance to find boot disk before deletion
         inst = await self._fetch_instance(node_id)
@@ -508,15 +587,10 @@ class NebiusNodeProvider(NodeProvider):
         await operation.wait()
         logger.info(f"Deleted Nebius instance {node_id}")
 
-        # Clean up boot disk
+        # Clean up boot disk — DeleteInstance does NOT cascade to the disk on
+        # Nebius, and the disk is still detaching here, so this must retry.
         if boot_disk_id:
-            try:
-                disk_client = self._disk_client()
-                disk_op = await disk_client.delete(DeleteDiskRequest(id=boot_disk_id))
-                await disk_op.wait()
-                logger.info(f"Deleted boot disk {boot_disk_id}")
-            except Exception:
-                logger.warning(f"Failed to delete boot disk {boot_disk_id}", exc_info=True)
+            await self._delete_disk_with_retry(boot_disk_id)
 
     async def _delete_orphan(self, node_id):
         """Delete a stopped instance that the autoscaler never asked for."""

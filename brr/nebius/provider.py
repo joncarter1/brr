@@ -105,6 +105,14 @@ class NebiusProvider(Provider):
             return 0
         return terminate_cluster_instances(_region_project_id(config, region), cluster_name)
 
+    def cleanup_orphan_disks(self, config, cluster_name):
+        """Sweep this cluster's leaked boot disks in its region. Returns count."""
+        from brr.nebius.nodes import cleanup_orphan_disks
+        region = _resolve_cluster_region(config, cluster_name)
+        if not region:
+            return 0
+        return cleanup_orphan_disks(_region_project_id(config, region), cluster_name)
+
     def query_stopped(self, config, cluster_name=None):
         """Return stopped instances. If cluster_name is given, scope to its region;
         otherwise aggregate across every configured region."""

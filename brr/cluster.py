@@ -628,6 +628,27 @@ def up(template, overrides, yes, dry_run, no_project, region):
                 f"[yellow]Warning: orphaned-instance sweep failed: {e}[/yellow]"
             )
 
+    # Nebius self-heal backstop: a boot disk is created before its instance,
+    # and DeleteInstance never cascades to the disk. A disk abandoned when
+    # CreateInstance failed (no instance ever existed) is invisible to the
+    # instance-centric autoscaler sweep and leaks forever. Sweep this
+    # cluster's unreferenced, non-recycle disks before launch. The filter
+    # only ever touches disks no instance references, so it is safe even with
+    # cache_stopped_nodes on (a cached instance still references its disk).
+    if provider == "nebius":
+        from brr.providers import get_provider
+        try:
+            swept = get_provider(provider).cleanup_orphan_disks(config, cluster_name)
+            if swept:
+                console.print(
+                    f"[dim]Swept {swept} orphaned disk(s) "
+                    f"for '{cluster_name}'[/dim]"
+                )
+        except Exception as e:
+            console.print(
+                f"[yellow]Warning: orphaned-disk sweep failed: {e}[/yellow]"
+            )
+
     if project_root and git_info:
         if first_deploy:
             console.print(f"Repo sync: [green]git clone {git_info['repo_name']}[/green] → ~/code/{git_info['repo_name']}/")

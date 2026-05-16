@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.16.4
+
+### Fixed
+
+- **Nebius `region=` positional override silently misfired.** `region=` is a valid AWS positional override (maps to `provider.region`), but Nebius region selection goes through the `--region` flag (per-region config overlay + cluster-name suffix). A positional `region=` was inert: `brr down nebius:c region=eu-west1 --delete` computed the *default*-region cluster name, skipped `ray down`, and silently terminated 0 instances — a false "done" while the real cluster kept billing. `brr up`/`down` now raise a `UsageError` pointing to `--region`. `brr down`'s "ignoring overrides" notice also now fires for all providers (was an `elif` that skipped Nebius, so stray Nebius overrides vanished with zero feedback).
+- **`brr up` preflight now probes the `ray` CLI, not just `import ray`.** `_ray_cmd` checked `uv run python -c "import ray"` but brr actually runs `uv run ray`; the module can import while the console script is broken (e.g. a stale absolute shebang in `.venv/bin/ray` after the project directory is renamed or moved), so brr passed its own check and surfaced uv's opaque `Failed to spawn: ray: No such file or directory (os error 2)`. It now probes `uv run ray --version` and, on failure, distinguishes *not installed* (→ `uv add 'ray[default]' <sdk>`) from *importable but CLI broken* (→ stale venv, rebuild with `rm -rf .venv && uv sync`).
+
+### Added
+
+- `brr up --allow-dirty` deploys with an unclean working tree. It relaxes only the clean-tree precheck (warns instead of erroring); the cluster still syncs the pushed HEAD via `sync-repo.sh`, so local uncommitted edits are not deployed. The SSH-remote / branch-pushed / commit-reachable / SSH-key prechecks remain hard failures — they are real `sync-repo.sh` preconditions.
+
 ## 0.16.3
 
 ### Fixed

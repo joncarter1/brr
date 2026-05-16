@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.3
+
+### Fixed
+
+- **Nebius orphaned-disk leak (two mechanisms).** ~27+ 1 TiB boot disks accumulated on the physio cluster — the Nebius analogue of the 0.16.2 AWS EBS leak. **(A)** `node_provider.create_node` creates the boot disk *before* the instance (Nebius requires an existing disk to attach); the old `try/finally` never deleted that disk if `CreateInstance` failed, so the disk was abandoned with no instance — invisible to the instance-centric autoscaler sweep and leaked forever. Dominant trigger: a region-blind shared template offering a `gpu-h100-sxm` node type in a region that only has `gpu-h200-sxm`, so every autoscale attempt was CreateDisk → CreateInstance-fail → 1 TiB leaked. **(B)** `_delete_instance_and_disk` made a single `DeleteDisk` call in `except: log`; immediately after the instance delete the disk is still detaching → `FAILED_PRECONDITION` → leaked, no retry. `DeleteInstance` does not cascade to the boot disk on Nebius, and the autoscaler's cleanup iterates instances only — so a disk that never had an instance is structurally invisible to it. Fix: `_delete_disk_with_retry` adds bounded `FAILED_PRECONDITION` backoff (mirrors `nuke.py`; `NOT_FOUND` is idempotent success; any other error gives up at once — no spin, no force-delete); `create_node` deletes the freshly-created disk when `CreateInstance` fails, or re-tags a *recycled* disk back into the recycle pool instead of destroying a warm disk; and `brr up` runs a live-safe Nebius backstop sweep (disks labelled `ray-cluster-name`, not referenced as boot/secondary by any instance, no unexpired `brr-recycle-until`) alongside the 0.16.2 AWS sweep.
+
+### Changed
+
+- CI: `Publish to PyPI` workflow bumped to `actions/checkout@v6` and `astral-sh/setup-uv@v8` (Node 24; resolves the Node 20 runner deprecation).
+
 ## 0.16.2
 
 ### Fixed

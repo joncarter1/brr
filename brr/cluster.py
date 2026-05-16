@@ -205,18 +205,35 @@ def _ray_cmd(provider="aws"):
     if project_root:
         pr = Path(project_root)
         if (pr / "pyproject.toml").exists() and (pr / "uv.lock").exists():
-            # Check that ray is actually available in the project
-            result = subprocess.run(
-                ["uv", "run", "python", "-c", "import ray"],
+            # Probe the ray *CLI* — brr runs `uv run ray`, not `import ray`.
+            # The module can import while the console script is broken (e.g. a
+            # stale absolute shebang after the project dir was renamed/moved),
+            # which otherwise surfaces as an opaque `uv` spawn ENOENT later.
+            probe = subprocess.run(
+                ["uv", "run", "ray", "--version"],
                 cwd=pr, capture_output=True,
             )
-            if result.returncode != 0:
-                sdk = {"aws": "boto3"}.get(provider, provider)
-                console.print(
-                    f"[red]Ray is not installed in your project.[/red]\n"
-                    f"Add cluster dependencies with:\n"
-                    f"  [bold]uv add 'ray[default]' {sdk}[/bold]"
-                )
+            if probe.returncode != 0:
+                importable = subprocess.run(
+                    ["uv", "run", "python", "-c", "import ray"],
+                    cwd=pr, capture_output=True,
+                ).returncode == 0
+                if importable:
+                    console.print(
+                        "[red]The `ray` CLI in your project venv is broken.[/red]\n"
+                        "`import ray` works but `uv run ray` fails — usually a "
+                        "stale venv (project dir renamed or moved, leaving a dead "
+                        "interpreter path in .venv/bin/ray).\n"
+                        "Rebuild it with:\n"
+                        f"  [bold]cd {pr} && rm -rf .venv && uv sync[/bold]"
+                    )
+                else:
+                    sdk = {"aws": "boto3"}.get(provider, provider)
+                    console.print(
+                        f"[red]Ray is not installed in your project.[/red]\n"
+                        f"Add cluster dependencies with:\n"
+                        f"  [bold]uv add 'ray[default]' {sdk}[/bold]"
+                    )
                 raise SystemExit(1)
             return ["uv", "run", "ray"]
 

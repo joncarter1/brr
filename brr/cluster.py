@@ -79,8 +79,14 @@ def _get_git_info(project_root):
     }
 
 
-def _validate_git_for_sync(project_root, git_info, config):
-    """Validate git state before first deploy. Raises click.UsageError on failure."""
+def _validate_git_for_sync(project_root, git_info, config, allow_dirty=False):
+    """Validate git state before first deploy. Raises click.UsageError on failure.
+
+    allow_dirty relaxes only the clean-working-tree requirement (the cluster
+    still syncs the pushed HEAD via sync-repo.sh, so local uncommitted edits are
+    not deployed). The remaining checks are hard preconditions for sync-repo.sh
+    and are always enforced.
+    """
     project_root = Path(project_root)
 
     def _git(*args):
@@ -91,10 +97,20 @@ def _validate_git_for_sync(project_root, git_info, config):
 
     errors = []
 
-    # Working tree must be clean
+    # Working tree must be clean (unless --allow-dirty)
     r = _git("status", "--porcelain")
     if r.stdout.strip():
-        errors.append("Working tree has uncommitted changes. Commit or stash before deploying.")
+        if allow_dirty:
+            console.print(
+                "[yellow]--allow-dirty: working tree has uncommitted changes. "
+                "The cluster will run the pushed HEAD; local uncommitted edits "
+                "are NOT synced.[/yellow]"
+            )
+        else:
+            errors.append(
+                "Working tree has uncommitted changes. Commit or stash before "
+                "deploying (or pass --allow-dirty to deploy the pushed HEAD anyway)."
+            )
 
     # Remote URL must be SSH
     url = git_info["remote_url"]
@@ -277,6 +293,25 @@ def _resolve_nebius_region(config, region):
     return region, suffix
 
 
+def _reject_nebius_region_override(provider, overrides):
+    """Catch `region=X` / `provider.region=X` used for Nebius region selection.
+
+    For AWS, `region=` is a valid positional override (maps to provider.region).
+    For Nebius, region selection goes through the --region flag (per-region
+    config overlay + cluster-name suffix); a positional `region=` is inert and
+    silently produces the wrong cluster name. Fail loud with the fix.
+    """
+    if provider != "nebius":
+        return
+    for o in overrides:
+        key, _, val = o.partition("=")
+        if key.strip() in ("region", "provider.region"):
+            raise click.UsageError(
+                f"'{o}' does not select a Nebius region. "
+                f"Use the --region flag instead: --region {val or '<name>'}"
+            )
+
+
 def _find_nebius_cluster_variants(base_name):
     """Scan staging dirs for clusters matching {base_name} or {base_name}-{region}.
 
@@ -410,7 +445,10 @@ def _sync_ssh_config(provider, cluster_name, display_name=None, region_suffix=""
 @click.option("--dry-run", is_flag=True, help="Print rendered config without launching")
 @click.option("--no-project", is_flag=True, help="Use built-in template even inside a project")
 @click.option("--region", default=None, help="Nebius region (when multiple configured)")
-def up(template, overrides, yes, dry_run, no_project, region):
+@click.option("--allow-dirty", is_flag=True,
+              help="Deploy even with an unclean working tree. The cluster still "
+                   "runs the pushed HEAD — local uncommitted changes are NOT synced.")
+def up(template, overrides, yes, dry_run, no_project, region, allow_dirty):
     """Launch or update a Ray cluster.
 
     TEMPLATE is provider:name (aws:h100, nebius:cpu) or a .yaml file path.
@@ -430,6 +468,7 @@ def up(template, overrides, yes, dry_run, no_project, region):
     import yaml
 
     provider, tpl_name = _resolve_provider(template)
+    _reject_nebius_region_override(provider, overrides)
     project_root = _project_root_for(provider, tpl_name, no_project=no_project)
 
     config, _ = read_merged_config(project_root)
@@ -562,7 +601,7 @@ def up(template, overrides, yes, dry_run, no_project, region):
     if project_root:
         git_info = _get_git_info(project_root)
         if git_info is not None:
-            _validate_git_for_sync(project_root, git_info, config)
+            _validate_git_for_sync(project_root, git_info, config, allow_dirty=allow_dirty)
 
     first_deploy = True
     if project_root and not dry_run:
@@ -717,16 +756,20 @@ def down(template, overrides, yes, delete, no_project, region):
     from brr.state import staging_dir_for, rendered_yaml_for
 
     provider, tpl_name = _resolve_provider(template)
+    _reject_nebius_region_override(provider, overrides)
     project_root = _project_root_for(provider, tpl_name, no_project=no_project)
+
+    # down does not render, so any positional overrides are ignored. Surface
+    # this for every provider — previously only non-nebius warned, so a stray
+    # Nebius override (e.g. region=) vanished with zero feedback.
+    if overrides:
+        console.print(f"[yellow]Ignoring overrides (down does not render): {' '.join(overrides)}[/yellow]")
 
     nebius_suffix = None
     if provider == "nebius":
         config = read_config()
         if nebius_regions(config):
             _, nebius_suffix = _resolve_nebius_region(config, region)
-    elif overrides:
-        # Non-nebius: preserve old behavior (down ignored overrides before).
-        console.print(f"[yellow]Ignoring overrides: {' '.join(overrides)}[/yellow]")
 
     cluster_name = _resolve_cluster_name(tpl_name, project_root, region=nebius_suffix)
     ssh_alias = cluster_ssh_alias(provider, cluster_name)

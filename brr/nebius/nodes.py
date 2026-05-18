@@ -46,6 +46,29 @@ def _nebius_sdk():
     return SDK()
 
 
+async def _list_all(client, request_cls, project_id):
+    """Return every item from a paginated Nebius list endpoint.
+
+    A single ``client.list(...)`` returns only the API's default page
+    (~10 items) plus a ``next_page_token``; code that read
+    ``response.items`` directly silently operated on a partial view —
+    e.g. the orphan-disk sweep deleting only the first page, or a
+    truncated instance list misclassifying a live instance's disk as an
+    orphan. Page through to exhaustion (page_size max is 999).
+    """
+    items = []
+    token = ""
+    while True:
+        resp = await client.list(
+            request_cls(parent_id=project_id, page_size=999, page_token=token)
+        )
+        items.extend(resp.items)
+        token = getattr(resp, "next_page_token", "") or ""
+        if not token:
+            break
+    return items
+
+
 def _extract_ip(instance, public=True):
     """Extract IP address from a Nebius instance."""
     if not instance or not instance.status:
@@ -107,9 +130,9 @@ async def _query_head_ip(project_id, cluster_name):
     sdk = _nebius_sdk()
     async with sdk:
         client = InstanceServiceClient(sdk)
-        response = await client.list(ListInstancesRequest(parent_id=project_id))
+        instances = await _list_all(client, ListInstancesRequest, project_id)
 
-        for inst in response.items:
+        for inst in instances:
             labels = dict(inst.metadata.labels) if inst.metadata.labels else {}
             if labels.get("ray-cluster-name") != cluster_name:
                 continue
@@ -143,10 +166,10 @@ async def _query_clusters(project_id):
     sdk = _nebius_sdk()
     async with sdk:
         client = InstanceServiceClient(sdk)
-        response = await client.list(ListInstancesRequest(parent_id=project_id))
+        instances = await _list_all(client, ListInstancesRequest, project_id)
 
         clusters = defaultdict(list)
-        for inst in response.items:
+        for inst in instances:
             labels = dict(inst.metadata.labels) if inst.metadata.labels else {}
             cluster_name = labels.get("ray-cluster-name")
             if not cluster_name:
@@ -206,10 +229,10 @@ async def _query_stopped_instances(project_id, cluster_name=None):
     sdk = _nebius_sdk()
     async with sdk:
         client = InstanceServiceClient(sdk)
-        response = await client.list(ListInstancesRequest(parent_id=project_id))
+        instances = await _list_all(client, ListInstancesRequest, project_id)
 
         stopped = []
-        for inst in response.items:
+        for inst in instances:
             labels = dict(inst.metadata.labels) if inst.metadata.labels else {}
             inst_cluster = labels.get("ray-cluster-name")
             if not inst_cluster:
@@ -273,10 +296,10 @@ async def _terminate_cluster_instances(project_id, cluster_name):
     sdk = _nebius_sdk()
     async with sdk:
         client = InstanceServiceClient(sdk)
-        response = await client.list(ListInstancesRequest(parent_id=project_id))
+        instances = await _list_all(client, ListInstancesRequest, project_id)
 
         ids = []
-        for inst in response.items:
+        for inst in instances:
             labels = dict(inst.metadata.labels) if inst.metadata.labels else {}
             if labels.get("ray-cluster-name") != cluster_name:
                 continue
@@ -299,8 +322,8 @@ async def _terminate_cluster_instances(project_id, cluster_name):
         # alone: any disk carrying that label after the instances are gone
         # is an orphan by definition.
         disk_client = DiskServiceClient(sdk)
-        disk_resp = await disk_client.list(ListDisksRequest(parent_id=project_id))
-        for d in disk_resp.items:
+        disks = await _list_all(disk_client, ListDisksRequest, project_id)
+        for d in disks:
             labels = dict(d.metadata.labels) if d.metadata.labels else {}
             if labels.get("ray-cluster-name") != cluster_name:
                 continue
@@ -369,15 +392,15 @@ async def _cleanup_orphan_disks(project_id, cluster_name):
     sdk = _nebius_sdk()
     async with sdk:
         inst_client = InstanceServiceClient(sdk)
-        inst_resp = await inst_client.list(ListInstancesRequest(parent_id=project_id))
-        attached = _referenced_disk_ids(inst_resp.items)
+        instances = await _list_all(inst_client, ListInstancesRequest, project_id)
+        attached = _referenced_disk_ids(instances)
 
         disk_client = DiskServiceClient(sdk)
-        disk_resp = await disk_client.list(ListDisksRequest(parent_id=project_id))
+        disks = await _list_all(disk_client, ListDisksRequest, project_id)
 
         now = int(time.time())
         targets = []
-        for d in disk_resp.items:
+        for d in disks:
             labels = dict(d.metadata.labels) if d.metadata.labels else {}
             if labels.get("ray-cluster-name") != cluster_name:
                 continue

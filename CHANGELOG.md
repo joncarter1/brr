@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.5
+
+### Fixed
+
+- **Nebius orphaned-disk leak: pagination (completes 0.16.3).** Every `client.list(ListInstances/DisksRequest)` in `nebius/nodes.py` read `response.items` from a single call, but the Nebius API caps a default page at ~10 items and returns a `next_page_token` the code never followed. The 0.16.3 `brr up` orphan-disk backstop (`_cleanup_orphan_disks`) and the cluster/stopped/head-IP/terminate queries therefore operated on a partial view — the sweep reported "deleted N" while leaving the remaining orphans behind and never converging. Latent data-loss risk too: a truncated ≤10 instance list feeds `_referenced_disk_ids`, so a cluster with >10 live instances could misclassify a disk attached to instance #11 as an orphan and delete it. Added `_list_all` (paginates with `page_size=999`, loops on `next_page_token`); all 7 list sites in `nodes.py` now route through it. `node_provider.py` already paginated correctly — the bug was confined to `nodes.py`.
+
+### Added
+
+- **Autoscaler-side GC for orphaned Nebius boot disks.** A preemptible instance Nebius preempts by *deleting* (not stopping) it is never observed in a stopped state, so `_preserve_disk_delete_instance` never runs and its boot disk is left carrying only a `ray-cluster-name` label — no instance (invisible to `_delete_orphan`), no recycle label (invisible to `_sweep_expired_recycle_disks`). Previously only the external `brr up` sweep could reclaim these, so long-lived clusters that are rarely re-upped accumulated TiB of leaked disks. `node_provider` now sweeps them from the autoscaler poll itself (`_sweep_orphan_disks`/`_delete_orphan_disk`, driven from `non_terminated_nodes`), self-throttled via `orphan_disk_sweep_interval_seconds` (default 600; `0` disables). Layered safety: two-strike confirmation (delete only disks seen orphaned in two consecutive sweeps, so every transient label-less/instance-less window — fresh create, recycled-disk reattach, preempt relabel — is attached or labelled by the next sweep and never confirmed); an age gate (`orphan_disk_min_age_seconds`, default 1800); an in-flight disk-id guard set populated in `_create_nodes` and `_preserve_disk_delete_instance`; exclusion of any `brr-recycle-*`-labelled disk (the recycle machinery owns those); a fully-paginated referenced-disk set; and an idempotent retry-delete with a dedup set. Backward-compatible: all new config is opt-out with safe-on defaults.
+
 ## 0.16.4
 
 ### Fixed

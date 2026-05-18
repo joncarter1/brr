@@ -88,6 +88,34 @@ class NebiusNodeProvider(NodeProvider):
         # Recyclable disks currently being claimed (label-strip in flight) so
         # two concurrent create_node calls don't grab the same disk.
         self._claiming_disks = set()
+        # Disks an in-flight code path legitimately owns while they have no
+        # instance and no recycle label (fresh create before CreateInstance;
+        # recycled disk after _claim_disk strips labels, before attach;
+        # preempt-preserve between DeleteInstance and the recycle relabel).
+        # The orphan-disk sweep must never touch these.
+        self._inflight_disk_ids = set()
+        # Orphan boot-disk GC: a preemptible instance Nebius deletes before we
+        # ever see it stopped never runs _preserve_disk_delete_instance, so its
+        # disk is left with only a ray-cluster-name label — no instance, no
+        # recycle label — invisible to both _delete_orphan and the recycle
+        # sweep. This is the leak that needed `brr up` to clean. Sweep it from
+        # the autoscaler poll instead. Interval 0 disables; min-age keeps the
+        # sweep clear of any disk a create_node is mid-flight on.
+        self._orphan_disk_sweep_interval = int(
+            provider_config.get("orphan_disk_sweep_interval_seconds", 600)
+        )
+        self._orphan_disk_min_age = int(
+            provider_config.get("orphan_disk_min_age_seconds", 1800)
+        )
+        self._last_orphan_disk_sweep = 0.0
+        # Two-strike confirmation: a disk is deleted only if it looked
+        # orphaned in the PREVIOUS sweep too. Every transient label-less /
+        # instance-less window (create, recycled-disk reattach, preempt
+        # relabel) is seconds; the sweep interval is minutes, so anything mid
+        # those windows is attached or recycle-labeled by the next sweep and
+        # never confirmed. Also resets to empty on monitor restart -> first
+        # post-restart sweep deletes nothing.
+        self._orphan_disk_candidates = set()
 
     def _run(self, coro):
         """Submit a coroutine to the provider's background event loop.
@@ -450,6 +478,7 @@ class NebiusNodeProvider(NodeProvider):
 
             with self.lock:
                 self._hidden_names.add(name)
+                self._inflight_disk_ids.add(disk_id)
             try:
                 op = await instance_client.create(CreateInstanceRequest(
                     metadata=ResourceMetadata(
@@ -510,6 +539,7 @@ class NebiusNodeProvider(NodeProvider):
             finally:
                 with self.lock:
                     self._hidden_names.discard(name)
+                    self._inflight_disk_ids.discard(disk_id)
 
             with self.lock:
                 self._cache[node_id] = {"tags": dict(tags), "instance": None}
@@ -624,12 +654,17 @@ class NebiusNodeProvider(NodeProvider):
         from nebius.api.nebius.compute.v1 import UpdateDiskRequest
         from nebius.api.nebius.common.v1 import ResourceMetadata
 
+        boot_disk_id = None
         try:
             inst = await self._fetch_instance(node_id)
             if not inst or not (inst.spec and inst.spec.boot_disk):
                 raise RuntimeError("instance has no boot disk to preserve")
             boot_disk_id = inst.spec.boot_disk.existing_disk.id
             disk_client = self._disk_client()
+            # Between the DeleteInstance below and the recycle relabel the disk
+            # has no instance and no recycle label — guard it from the sweep.
+            with self.lock:
+                self._inflight_disk_ids.add(boot_disk_id)
 
             # Read disk metadata BEFORE deleting the instance so we can carry
             # size + image_family into the recycle labels. (source_image_family
@@ -675,6 +710,8 @@ class NebiusNodeProvider(NodeProvider):
         finally:
             with self.lock:
                 self._preserving_disk_for.discard(node_id)
+                if boot_disk_id:
+                    self._inflight_disk_ids.discard(boot_disk_id)
 
     async def _find_recyclable_disk(self, user_node_type, disk_size_gb, image_family):
         """Return a recyclable disk id matching the node_type/size/image, or None."""
@@ -818,6 +855,96 @@ class NebiusNodeProvider(NodeProvider):
             with self.lock:
                 self._orphan_disk_deleting.discard(disk_id)
 
+    async def _sweep_orphan_disks(self, referenced_disk_ids):
+        """GC boot disks no instance references and no code path owns.
+
+        Targets the leak the instance-centric paths structurally can't see: a
+        preemptible instance Nebius deletes before the autoscaler observes it
+        stopped never runs _preserve_disk_delete_instance, so its boot disk is
+        left carrying only its ray-cluster-name label — no instance, no
+        recycle label — so both _delete_orphan (instance-centric) and
+        _sweep_expired_recycle_disks (recycle-label-centric) ignore it forever.
+        Previously only the external `brr up` sweep caught these.
+
+        Safety (a bug here deletes live disks, so each guard is load-bearing):
+          - throttled to _orphan_disk_sweep_interval (0 disables);
+          - only disks older than _orphan_disk_min_age, so a disk a create_node
+            is mid-flight on is never a target even if tracking lagged;
+          - skips any disk carrying a brr-recycle-* label — the recycle
+            machinery / _sweep_expired_recycle_disks owns those exclusively;
+          - skips disks referenced by ANY instance (caller passes the set
+            built from the same fully-paginated instance list) and disks an
+            active path owns (_inflight_disk_ids / _claiming_disks);
+          - fire-and-forget, idempotent delete (NOT_FOUND == success), with a
+            dedup set so concurrent polls don't double-submit.
+        """
+        import time
+        from nebius.api.nebius.compute.v1 import ListDisksRequest
+
+        if self._orphan_disk_sweep_interval <= 0:
+            return
+        now = time.time()
+        if now - self._last_orphan_disk_sweep < self._orphan_disk_sweep_interval:
+            return
+        self._last_orphan_disk_sweep = now
+
+        with self.lock:
+            protected = (
+                set(self._inflight_disk_ids)
+                | set(self._claiming_disks)
+                | set(self._orphan_disk_deleting)
+            )
+
+        client = self._disk_client()
+        page_token = None
+        current = set()
+        while True:
+            req = ListDisksRequest(parent_id=self.project_id)
+            if page_token:
+                req.page_token = page_token
+            resp = await client.list(req)
+            for d in resp.items:
+                if d.metadata.id in referenced_disk_ids or d.metadata.id in protected:
+                    continue
+                labels = dict(d.metadata.labels) if d.metadata.labels else {}
+                if labels.get(TAG_RAY_CLUSTER_NAME) != self.cluster_name:
+                    continue
+                # Any recycle-tagged disk belongs to the recycle machinery.
+                if any(k.startswith(self._RECYCLE_LABEL_PREFIX) for k in labels):
+                    continue
+                created_ts = d.metadata.created_at.seconds if d.metadata.created_at else 0
+                # Unknown age -> refuse to delete (conservative).
+                if not created_ts or (now - created_ts) < self._orphan_disk_min_age:
+                    continue
+                current.add(d.metadata.id)
+            if not resp.next_page_token:
+                break
+            page_token = resp.next_page_token
+
+        # Two-strike: only disks that were also orphaned last sweep. Carry the
+        # current set forward as next sweep's confirmation baseline.
+        to_delete = current & self._orphan_disk_candidates
+        self._orphan_disk_candidates = current
+
+        for disk_id in to_delete:
+            should_submit = False
+            with self.lock:
+                if disk_id not in self._orphan_disk_deleting:
+                    self._orphan_disk_deleting.add(disk_id)
+                    should_submit = True
+            if should_submit:
+                asyncio.run_coroutine_threadsafe(
+                    self._delete_orphan_disk(disk_id), self._loop
+                )
+
+    async def _delete_orphan_disk(self, disk_id):
+        try:
+            if await self._delete_disk_with_retry(disk_id):
+                logger.info(f"Swept orphaned boot disk {disk_id} (no instance)")
+        finally:
+            with self.lock:
+                self._orphan_disk_deleting.discard(disk_id)
+
     def terminate_nodes(self, node_ids):
         for node_id in node_ids:
             self.terminate_node(node_id)
@@ -832,6 +959,7 @@ class NebiusNodeProvider(NodeProvider):
 
         client = self._instance_client()
         nodes = []
+        referenced_disk_ids = set()
         page_token = None
         with self.lock:
             hidden_names = set(self._hidden_names)
@@ -843,13 +971,28 @@ class NebiusNodeProvider(NodeProvider):
             response = await client.list(req)
 
             for inst in response.items:
-                if inst.metadata.id in hidden_ids:
-                    continue
-                if inst.metadata.name in hidden_names:
-                    continue
                 labels = dict(inst.metadata.labels) if inst.metadata.labels else {}
 
                 if labels.get(TAG_RAY_CLUSTER_NAME) != self.cluster_name:
+                    continue
+
+                # Record every disk this cluster's instances reference — any
+                # state, including hidden/restarting — BEFORE the hidden/tag
+                # filters, so the orphan sweep can never delete an attached or
+                # about-to-restart disk.
+                if inst.spec:
+                    bd = getattr(inst.spec, "boot_disk", None)
+                    ed = getattr(bd, "existing_disk", None) if bd else None
+                    if ed and getattr(ed, "id", None):
+                        referenced_disk_ids.add(ed.id)
+                    for sd in getattr(inst.spec, "secondary_disks", None) or []:
+                        sed = getattr(sd, "existing_disk", None)
+                        if sed and getattr(sed, "id", None):
+                            referenced_disk_ids.add(sed.id)
+
+                if inst.metadata.id in hidden_ids:
+                    continue
+                if inst.metadata.name in hidden_names:
                     continue
                 if not all(labels.get(k) == v for k, v in tag_filters.items()):
                     continue
@@ -905,6 +1048,11 @@ class NebiusNodeProvider(NodeProvider):
         # Expire recycle disks that weren't reclaimed within the TTL.
         if self._recycle_ttl_seconds > 0:
             await self._sweep_expired_recycle_disks()
+
+        # GC truly-abandoned boot disks (preemptible instance Nebius deleted
+        # before we saw it stopped -> no recycle label, no instance). Throttled
+        # internally; uses the fully-paginated referenced set built above.
+        await self._sweep_orphan_disks(referenced_disk_ids)
 
         return nodes
 

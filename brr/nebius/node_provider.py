@@ -108,6 +108,16 @@ class NebiusNodeProvider(NodeProvider):
             provider_config.get("orphan_disk_min_age_seconds", 1800)
         )
         self._last_orphan_disk_sweep = 0.0
+        # Recycle-disk TTL sweep is gated by _recycle_ttl_seconds > 0 at the
+        # call site, which is true on every poll under the default config —
+        # so without a throttle here the full disk-list pagination runs on
+        # every poll. Mirror the orphan-disk throttle; 0 disables (every
+        # poll). Default 120s is well under the 600s TTL so expired-disk
+        # reclamation latency stays small.
+        self._recycle_sweep_interval = int(
+            provider_config.get("recycle_sweep_interval_seconds", 120)
+        )
+        self._last_recycle_sweep = 0.0
         # Two-strike confirmation: a disk is deleted only if it looked
         # orphaned in the PREVIOUS sweep too. Every transient label-less /
         # instance-less window (create, recycled-disk reattach, preempt
@@ -805,6 +815,13 @@ class NebiusNodeProvider(NodeProvider):
         import time
         from nebius.api.nebius.compute.v1 import ListDisksRequest
 
+        # Throttle full disk-list pagination; 0 = every poll.
+        if self._recycle_sweep_interval > 0:
+            wall = time.time()
+            if wall - self._last_recycle_sweep < self._recycle_sweep_interval:
+                return
+            self._last_recycle_sweep = wall
+
         client = self._disk_client()
         now = int(time.time())
         page_token = None
@@ -1045,14 +1062,24 @@ class NebiusNodeProvider(NodeProvider):
                 break
             page_token = response.next_page_token
 
-        # Expire recycle disks that weren't reclaimed within the TTL.
-        if self._recycle_ttl_seconds > 0:
-            await self._sweep_expired_recycle_disks()
-
-        # GC truly-abandoned boot disks (preemptible instance Nebius deleted
-        # before we saw it stopped -> no recycle label, no instance). Throttled
-        # internally; uses the fully-paginated referenced set built above.
-        await self._sweep_orphan_disks(referenced_disk_ids)
+        # Best-effort post-enumeration disk GC. `nodes` is already complete;
+        # a transient Nebius INTERNAL during the list/pagination phase of
+        # either sweep must NOT discard the enumeration and blind the
+        # autoscaler (Ray monitor v2 logs "No autoscaling state to report."
+        # whenever this method raises). Individual disk deletes are already
+        # guarded inside _delete_expired_recycle_disk / _delete_orphan_disk;
+        # this guard covers the list calls and any other transient miss.
+        try:
+            # Expire recycle disks that weren't reclaimed within the TTL.
+            if self._recycle_ttl_seconds > 0:
+                await self._sweep_expired_recycle_disks()
+            # GC truly-abandoned boot disks (preemptible instance Nebius
+            # deleted before we saw it stopped -> no recycle label, no
+            # instance). Throttled internally; uses the fully-paginated
+            # referenced set built above.
+            await self._sweep_orphan_disks(referenced_disk_ids)
+        except Exception:
+            logger.warning("post-enumeration disk sweep failed", exc_info=True)
 
         return nodes
 

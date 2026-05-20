@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.6
+
+### Fixed
+
+- **Nebius autoscaler went blind on transient disk-sweep failures.** A transient `INTERNAL` from `ListDisks` during either post-enumeration sweep (recycle-TTL expiry, orphaned-boot-disk GC) propagated out of `non_terminated_nodes`, discarding the already-built node list. Ray's autoscaler v2 then logged `"No autoscaling state to report."` and went blind until the next poll succeeded. The two sweep calls are now wrapped in a single `try/except` that logs at WARNING; per-disk delete failures were already guarded individually.
+- **Recycle-disk TTL sweep ran on every autoscaler poll.** The sweep was gated only by `_recycle_ttl_seconds > 0` (default 600), so a full paginated `ListDisks` ran on every poll — needless API load and a bigger blast radius for the failure above. Now throttled via `recycle_sweep_interval_seconds` (default 120s, well under the 600s TTL so reclamation latency stays small; `0` disables), mirroring the existing `orphan_disk_sweep_interval_seconds`.
+
 ## 0.16.5
 
 ### Fixed

@@ -8,11 +8,27 @@ import asyncio
 import logging
 import threading
 import uuid
+from datetime import datetime
 
 from ray.autoscaler.node_provider import NodeProvider
 from ray.autoscaler.tags import TAG_RAY_CLUSTER_NAME, TAG_RAY_USER_NODE_TYPE
 
 logger = logging.getLogger(__name__)
+
+
+def _created_unix_ts(created_at):
+    """Return int unix seconds for a Nebius metadata.created_at, or 0.
+
+    Newer Nebius SDK versions decode timestamps to datetime; older versions
+    returned a protobuf Timestamp with a .seconds attribute. Handle both so
+    a server-side SDK bump doesn't break the recycle picker / orphan GC.
+    """
+    if not created_at:
+        return 0
+    if isinstance(created_at, datetime):
+        return int(created_at.timestamp())
+    seconds = getattr(created_at, "seconds", None)
+    return int(seconds) if seconds else 0
 
 
 class NebiusNodeProvider(NodeProvider):
@@ -766,10 +782,7 @@ class NebiusNodeProvider(NodeProvider):
                     continue
                 if labels.get(self._RECYCLE_IMAGE_LABEL) != image_family:
                     continue
-                created_ts = 0
-                if d.metadata.created_at:
-                    created_ts = d.metadata.created_at.seconds
-                candidates.append((created_ts, d.metadata.id))
+                candidates.append((_created_unix_ts(d.metadata.created_at), d.metadata.id))
             if not resp.next_page_token:
                 break
             page_token = resp.next_page_token
@@ -929,7 +942,7 @@ class NebiusNodeProvider(NodeProvider):
                 # Any recycle-tagged disk belongs to the recycle machinery.
                 if any(k.startswith(self._RECYCLE_LABEL_PREFIX) for k in labels):
                     continue
-                created_ts = d.metadata.created_at.seconds if d.metadata.created_at else 0
+                created_ts = _created_unix_ts(d.metadata.created_at)
                 # Unknown age -> refuse to delete (conservative).
                 if not created_ts or (now - created_ts) < self._orphan_disk_min_age:
                     continue

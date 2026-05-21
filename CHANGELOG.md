@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.7
+
+### Fixed
+
+- **Nebius disk GC crashed on `datetime` `created_at`.** Newer Nebius SDK versions decode `metadata.created_at` to `datetime.datetime`, but the node provider's recycle-disk picker and orphan-disk GC still read `.seconds` (a protobuf `Timestamp` attribute), raising `AttributeError: 'datetime.datetime' object has no attribute 'seconds'`. `nodes.py:_format_uptime` already handled both shapes — the node provider didn't. Effect: 0.16.6's post-enumeration try/except logged the orphan-sweep failure as a WARNING during `brr down` (so the command completed but the GC didn't), and the recycle-disk picker (called from `create_node`, uncaught) would crash node launches outright. Added `_created_unix_ts()` handling `datetime`, protobuf `Timestamp`, and `None`; routed both call sites through it.
+
 ## 0.16.6
 
 ### Fixed

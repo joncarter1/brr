@@ -673,7 +673,8 @@ def up(template, overrides, yes, dry_run, no_project, region, allow_dirty):
     ):
         from brr.providers import get_provider
         try:
-            swept = get_provider(provider).cleanup_stopped(config, cluster_name)
+            with console.status(f"Sweeping orphaned stopped instances for '{cluster_name}'..."):
+                swept = get_provider(provider).cleanup_stopped(config, cluster_name)
             if swept:
                 console.print(
                     f"[dim]Swept {swept} orphaned stopped instance(s) "
@@ -694,7 +695,8 @@ def up(template, overrides, yes, dry_run, no_project, region, allow_dirty):
     if provider == "nebius":
         from brr.providers import get_provider
         try:
-            swept = get_provider(provider).cleanup_orphan_disks(config, cluster_name)
+            with console.status(f"Sweeping orphaned disks for '{cluster_name}' (up to 180s)..."):
+                swept = get_provider(provider).cleanup_orphan_disks(config, cluster_name)
             if swept:
                 console.print(
                     f"[dim]Swept {swept} orphaned disk(s) "
